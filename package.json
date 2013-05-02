@@ -1,0 +1,11 @@
+{
+	"name": "thoth",
+	"description": "Weigher of hearts, god of knowledge",
+	"private": true,
+	"version": "0.0.1",
+	"dependencies": {
+		"manta": ">=1.0.2",
+		"ctype": ">=0.5.2",
+		"sprintf": "0.1.1"
+	}
+}

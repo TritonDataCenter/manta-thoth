@@ -1,0 +1,1064 @@
+#!/usr/bin/env node
+
+/*
+ * Copyright (c) 2013, Joyent, Inc. All rights reserved.
+ */
+
+var mod_ctype = require('ctype');
+var mod_path = require('path');
+var mod_fs = require('fs');
+var util = require('util');
+var mod_crypto = require('crypto');
+var mod_bunyan = require('bunyan');
+var mod_restify = require('restify');
+var mod_manta = require('manta');
+var mod_zlib = require('zlib');
+
+var sprintf = require('sprintf').sprintf;
+
+var handlers = {};
+
+var thoth = {
+	path: '/' + process.env.MANTA_USER + '/stor/thoth',
+	verbose: true,
+	cmds: [
+		{ token: 'upload', params: { file: true },
+		    usage: 'upload the specified core or crash dump' },
+		{ token: 'info', params: { 'dump|spec': true },
+		    usage: 'print information about the specified dump(s)' },
+		{ token: 'ls', options: { 'dump|spec': true },
+		    usage: 'list dumps matching the specification' },
+		{ token: 'keys', params: { 'dump|spec': true },
+		    usage: 'print object key(s) for specified dump(s)' },
+		{ token: 'report', options: { 'dump': true },
+		    params: { 'spec': true },
+		    usage: 'report on dumps matching the specification' },
+		{ token: 'diagnose', params: { dump: true, ticket: true },
+		    usage: 'diagnose the specified dump as the ' +
+			'specified ticket' },
+		{ token: 'undiagnose', params: { dump: true },
+		    usage: 'undiagnose the specified dump(s)' },
+	]
+};
+
+var status = function (msg)
+{
+	if (thoth.verbose)
+		console.error('thoth: ' + msg);
+}
+
+var warn = function (msg)
+{
+	console.error('thoth: ' + msg);
+}
+
+var fatal = function (msg)
+{
+	var i, c = mod_path.basename(process.argv[1]);
+
+	console.error(c + ': ' + msg);
+
+	process.exit(1);
+};
+
+var usage = function (msg)
+{
+	var i, c = mod_path.basename(process.argv[1]);
+
+	console.error(c + ': ' + msg);
+        console.error('Usage: ' + c + ' [command] [params]\n');
+
+	for (i = 0; i < thoth.cmds.length; i++) {
+		var cmd = thoth.cmds[i].token + ' ';
+
+		for (opt in thoth.cmds[i].params)
+			cmd += '[' + opt + '] ';
+
+		for (opt in thoth.cmds[i].options)
+			cmd += '[[' + opt + ']] ';
+		
+		console.error(sprintf('  %-26s %s',
+		    cmd, thoth.cmds[i].usage));
+        }
+
+        process.exit(1);
+};
+
+/*
+ * To determine if the specified file is a core file, we need to read the
+ * ELF headers and look at the type.  This routine will fail if it's not
+ * an ELF file or not an ELF core file.
+ */
+var isCore = function (buffer)
+{
+	var width, endianness, hdr;
+
+	var err = function (msg) {
+		if (thoth.verbose) 
+			warn(msg);
+	};
+
+	var constants = {
+		EI_NIDENT: 16,
+		EI_MAG0: 0,
+		EI_MAG1: 1,
+		EI_MAG2: 2,
+		EI_MAG3: 3,
+		EI_CLASS: 4,
+		EI_DATA: 5,
+		EI_VERSION: 6,
+		EI_OSABI: 7,
+		EI_ABIVERSION: 8,
+		EI_PAD: 9,
+		ELFMAG0: 0x7f,
+		ELFMAG1: 'E'.charCodeAt(0),
+		ELFMAG2: 'L'.charCodeAt(0),
+		ELFMAG3: 'F'.charCodeAt(0),
+		ELFMAG: '\177ELF',
+		SELFMAG: 4,
+		ELFCLASSNONE: 0,
+		ELFCLASS32: 1,
+		ELFCLASS64: 2,
+		ELFCLASSNUM: 3,
+		ELFDATANONE: 0,
+		ELFDATA2LSB: 1,
+		ELFDATA2MSB: 2,
+		ELFDATANUM: 3,
+		ET_NONE: 0,
+		ET_REL: 1,
+		ET_EXEC: 2,
+		ET_DYN: 3,
+		ET_CORE: 4,
+		ET_NUM: 5,
+		ET_LOOS: 0xfe00,
+		ET_LOSUNW: 0xfeff,
+		ET_SUNWPSEUDO: 0xfeff,
+		ET_HISUNW: 0xfeff,
+		ET_HIOS: 0xfeff,
+		ET_LOPROC: 0xff00,
+		ET_HIPROC: 0xffff,
+		ET_LOPROC: 0xff00,
+		ET_HIPROC: 0xffff,
+		EM_NONE: 0,
+		EM_M32: 1,
+		EM_SPARC: 2,
+		EM_386: 3,
+		EM_68K: 4,
+		EM_88K: 5,
+		EM_486: 6,
+		EM_860: 7,
+		EM_MIPS: 8,
+		EM_S370: 9,
+		EM_MIPS_RS3_LE: 10,
+		EM_RS6000: 11,
+		EM_UNKNOWN12: 12,
+		EM_UNKNOWN13: 13,
+		EM_UNKNOWN14: 14,
+		EM_PA_RISC: 15,
+		EM_PARISC: 15,
+		EM_nCUBE: 16,
+		EM_VPP500: 17,
+		EM_SPARC32PLUS: 18,
+		EM_960: 19,
+		EM_PPC: 20,
+		EM_PPC64: 21,
+		EM_S390: 22,
+		EM_UNKNOWN22: 22,
+		EM_UNKNOWN23: 23,
+		EM_UNKNOWN24: 24,
+		EM_UNKNOWN25: 25,
+		EM_UNKNOWN26: 26,
+		EM_UNKNOWN27: 27,
+		EM_UNKNOWN28: 28,
+		EM_UNKNOWN29: 29,
+		EM_UNKNOWN30: 30,
+		EM_UNKNOWN31: 31,
+		EM_UNKNOWN32: 32,
+		EM_UNKNOWN33: 33,
+		EM_UNKNOWN34: 34,
+		EM_UNKNOWN35: 35,
+		EM_V800: 36,
+		EM_FR20: 37,
+		EM_RH32: 38,
+		EM_RCE: 39,
+		EM_ARM: 40,
+		EM_ALPHA: 41,
+		EM_SH: 42,
+		EM_SPARCV9: 43,
+		EM_TRICORE: 44,
+		EM_ARC: 45,
+		EM_H8_300: 46,
+		EM_H8_300H: 47,
+		EM_H8S: 48,
+		EM_H8_500: 49,
+		EM_IA_64: 50,
+		EM_MIPS_X: 51,
+		EM_COLDFIRE: 52,
+		EM_68HC12: 53,
+		EM_MMA: 54,
+		EM_PCP: 55,
+		EM_NCPU: 56,
+		EM_NDR1: 57,
+		EM_STARCORE: 58,
+		EM_ME16: 59,
+		EM_ST100: 60,
+		EM_TINYJ: 61,
+		EM_AMD64: 62,
+		EM_X86_64: 62,
+		EM_PDSP: 63,
+		EM_UNKNOWN64: 64,
+		EM_UNKNOWN65: 65,
+		EM_FX66: 66,
+		EM_ST9PLUS: 67,
+		EM_ST7: 68,
+		EM_68HC16: 69,
+		EM_68HC11: 70,
+		EM_68HC08: 71,
+		EM_68HC05: 72,
+		EM_SVX: 73,
+		EM_ST19: 74,
+		EM_VAX: 75,
+		EM_CRIS: 76,
+		EM_JAVELIN: 77,
+		EM_FIREPATH: 78,
+		EM_ZSP: 79,
+		EM_MMIX: 80,
+		EM_HUANY: 81,
+		EM_PRISM: 82,
+		EM_AVR: 83,
+		EM_FR30: 84,
+		EM_D10V: 85,
+		EM_D30V: 86,
+		EM_V850: 87,
+		EM_M32R: 88,
+		EM_MN10300: 89,
+		EM_MN10200: 90,
+		EM_PJ: 91,
+		EM_OPENRISC: 92,
+		EM_ARC_A5: 93,
+		EM_XTENSA: 94,
+		EM_NUM: 95,
+		EV_NONE: 0,
+		EV_CURRENT: 1,
+		EV_NUM: 2,
+		ELFOSABI_NONE: 0,
+		ELFOSABI_SYSV: 0,
+		ELFOSABI_HPUX: 1,
+		ELFOSABI_NETBSD: 2,
+		ELFOSABI_LINUX: 3,
+		ELFOSABI_UNKNOWN4: 4,
+		ELFOSABI_UNKNOWN5: 5,
+		ELFOSABI_SOLARIS: 6,
+		ELFOSABI_AIX: 7,
+		ELFOSABI_IRIX: 8,
+		ELFOSABI_FREEBSD: 9,
+		ELFOSABI_TRU64: 10,
+		ELFOSABI_MODESTO: 11,
+		ELFOSABI_OPENBSD: 12,
+		ELFOSABI_OPENVMS: 13,
+		ELFOSABI_NSK: 14,
+		ELFOSABI_AROS: 15,
+		ELFOSABI_ARM: 97,
+		ELFOSABI_STANDALONE: 255,
+		EAV_SUNW_NONE: 0,
+		EAV_SUNW_CURRENT: 1,
+		EAV_SUNW_NUM: 2,
+		PT_NULL: 0,
+		PT_LOAD: 1,
+		PT_DYNAMIC: 2,
+		PT_INTERP: 3,
+		PT_NOTE: 4,
+		PT_SHLIB: 5,
+		PT_PHDR: 6,
+		PT_TLS: 7,
+		PT_NUM: 8,
+		PT_LOOS: 0x60000000,
+		PT_SUNW_UNWIND: 0x6464e550,
+		PT_SUNW_EH_FRAME: 0x6474e550,
+		PT_GNU_EH_FRAME: 0x6474e550,
+		PT_GNU_STACK: 0x6474e551,
+		PT_GNU_RELRO: 0x6474e552,
+		PT_LOSUNW: 0x6ffffffa,
+		PT_SUNWBSS: 0x6ffffffa,
+		PT_SUNWSTACK: 0x6ffffffb,
+		PT_SUNWDTRACE: 0x6ffffffc,
+		PT_SUNWCAP: 0x6ffffffd,
+		PT_HISUNW: 0x6fffffff,
+		PT_HIOS: 0x6fffffff,
+		PT_LOPROC: 0x70000000,
+		PT_HIPROC: 0x7fffffff,
+		PF_R: 0x4,
+		PF_W: 0x2,
+		PF_X: 0x1,
+		PF_MASKOS: 0x0ff00000,
+		PF_MASKPROC: 0xf0000000,
+		PF_SUNW_FAILURE: 0x00100000,
+		PF_SUNW_KILLED: 0x00200000,
+		PF_SUNW_SIGINFO: 0x00400000,
+		PN_XNUM: 0xffff,
+		SHT_NULL: 0,
+		SHT_PROGBITS: 1,
+		SHT_SYMTAB: 2,
+		SHT_STRTAB: 3,
+		SHT_RELA: 4,
+		SHT_HASH: 5,
+		SHT_DYNAMIC: 6,
+		SHT_NOTE: 7,
+		SHT_NOBITS: 8,
+		SHT_REL: 9,
+		SHT_SHLIB: 10,
+		SHT_DYNSYM: 11,
+		SHT_UNKNOWN12: 12,
+		SHT_UNKNOWN13: 13,
+		SHT_INIT_ARRAY: 14,
+		SHT_FINI_ARRAY: 15,
+		SHT_PREINIT_ARRAY: 16,
+		SHT_GROUP: 17,
+		SHT_SYMTAB_SHNDX: 18,
+		SHT_NUM: 19,
+		SHT_LOOS: 0x60000000,
+		SHT_LOSUNW: 0x6fffffef,
+		SHT_SUNW_capchain: 0x6fffffef,
+		SHT_SUNW_capinfo: 0x6ffffff0,
+		SHT_SUNW_symsort: 0x6ffffff1,
+		SHT_SUNW_tlssort: 0x6ffffff2,
+		SHT_SUNW_LDYNSYM: 0x6ffffff3,
+		SHT_SUNW_dof: 0x6ffffff4,
+		SHT_SUNW_cap: 0x6ffffff5,
+		SHT_SUNW_SIGNATURE: 0x6ffffff6,
+		SHT_SUNW_ANNOTATE: 0x6ffffff7,
+		SHT_SUNW_DEBUGSTR: 0x6ffffff8,
+		SHT_SUNW_DEBUG: 0x6ffffff9,
+		SHT_SUNW_move: 0x6ffffffa,
+		SHT_SUNW_COMDAT: 0x6ffffffb,
+		SHT_SUNW_syminfo: 0x6ffffffc,
+		SHT_SUNW_verdef: 0x6ffffffd,
+		SHT_GNU_verdef: 0x6ffffffd,
+		SHT_SUNW_verneed: 0x6ffffffe,
+		SHT_GNU_verneed: 0x6ffffffe,
+		SHT_SUNW_versym: 0x6fffffff,
+		SHT_GNU_versym: 0x6fffffff,
+		SHT_HISUNW: 0x6fffffff,
+		SHT_HIOS: 0x6fffffff,
+		SHT_GNU_ATTRIBUTES: 0x6ffffff5,
+		SHT_GNU_HASH: 0x6ffffff6,
+		SHT_GNU_LIBLIST: 0x6ffffff7,
+		SHT_CHECKSUM: 0x6ffffff8,
+		SHT_LOPROC: 0x70000000,
+		SHT_HIPROC: 0x7fffffff,
+		SHT_LOUSER: 0x80000000,
+		SHT_HIUSER: 0xffffffff,
+		SHF_WRITE: 0x01,
+		SHF_ALLOC: 0x02,
+		SHF_EXECINSTR: 0x04,
+		SHF_MERGE: 0x10,
+		SHF_STRINGS: 0x20,
+		SHF_INFO_LINK: 0x40,
+		SHF_LINK_ORDER: 0x80,
+		SHF_OS_NONCONFORMING: 0x100,
+		SHF_GROUP: 0x200,
+		SHF_TLS: 0x400,
+		SHF_MASKOS: 0x0ff00000,
+		SHF_MASKPROC: 0xf0000000,
+		SHN_UNDEF: 0,
+		SHN_LORESERVE: 0xff00,
+		SHN_LOPROC: 0xff00,
+		SHN_HIPROC: 0xff1f,
+		SHN_LOOS: 0xff20,
+		SHN_LOSUNW: 0xff3f,
+		SHN_SUNW_IGNORE: 0xff3f,
+		SHN_HISUNW: 0xff3f,
+		SHN_HIOS: 0xff3f,
+		SHN_ABS: 0xfff1,
+		SHN_COMMON: 0xfff2,
+		SHN_XINDEX: 0xffff,
+		SHN_HIRESERVE: 0xffff,
+		STN_UNDEF: 0,
+		STB_LOCAL: 0,
+		STB_GLOBAL: 1,
+		STB_WEAK: 2,
+		STB_NUM: 3,
+		STB_LOPROC: 13,
+		STB_HIPROC: 15,
+		STT_NOTYPE: 0,
+		STT_OBJECT: 1,
+		STT_FUNC: 2,
+		STT_SECTION: 3,
+		STT_FILE: 4,
+		STT_COMMON: 5,
+		STT_TLS: 6,
+		STT_NUM: 7,
+		STT_LOOS: 10,
+		STT_HIOS: 12,
+		STT_LOPROC: 13,
+		STT_HIPROC: 15,
+		STV_DEFAULT: 0,
+		STV_INTERNAL: 1,
+		STV_HIDDEN: 2,
+		STV_PROTECTED: 3,
+		STV_EXPORTED: 4,
+		STV_SINGLETON: 5,
+		STV_ELIMINATE: 6,
+		STV_NUM: 7,
+		GRP_COMDAT: 0x01,
+		CAPINFO_NONE: 0,
+		CAPINFO_CURRENT: 1,
+		CAPINFO_NUM: 2,
+		CAPCHAIN_NONE: 0,
+		CAPCHAIN_CURRENT: 1,
+		CAPCHAIN_NUM: 2,
+		CAPINFO_SUNW_GLOB: 0xff,
+		CA_SUNW_NULL: 0,
+		CA_SUNW_HW_1: 1,
+		CA_SUNW_SF_1: 2,
+		CA_SUNW_HW_2: 3,
+		CA_SUNW_PLAT: 4,
+		CA_SUNW_MACH: 5,
+		CA_SUNW_ID: 6,
+		CA_SUNW_NUM: 7,
+		SF1_SUNW_FPKNWN: 0x001,
+		SF1_SUNW_FPUSED: 0x002,
+		SF1_SUNW_ADDR32: 0x004,
+		SF1_SUNW_MASK: 0x007,
+		NT_PRSTATUS: 1,
+		NT_PRFPREG: 2,
+		NT_PRPSINFO: 3,
+		NT_PRXREG: 4,
+		NT_PLATFORM: 5,
+		NT_AUXV: 6,
+		NT_GWINDOWS: 7,
+		NT_ASRS: 8,
+		NT_LDT: 9,
+		NT_PSTATUS: 10,
+		NT_PSINFO: 13,
+		NT_PRCRED: 14,
+		NT_UTSNAME: 15,
+		NT_LWPSTATUS: 16,
+		NT_LWPSINFO: 17,
+		NT_PRPRIV: 18,
+		NT_PRPRIVINFO: 19,
+		NT_CONTENT: 20,
+		NT_ZONENAME: 21,
+		NT_FDINFO: 22,
+		NT_SPYMASTER: 23,
+		NT_NUM: 23
+	};
+
+	var Elf_Ehdr = [
+		{ e_ident: { type: 'char[' + constants.EI_NIDENT + ']' } },
+		{ e_type: { type: 'Elf_Half' } },
+		{ e_machine: { type: 'Elf_Half' } },
+		{ e_version: { type: 'Elf_Word' } },
+		{ e_entry: { type: 'Elf_Addr' } },
+		{ e_phoff: { type: 'Elf_Off' } },
+		{ e_shoff: { type: 'Elf_Off' } },
+		{ e_flags: { type: 'Elf_Word' } },
+		{ e_ehsize: { type: 'Elf_Half' } },
+		{ e_phentsize: { type: 'Elf_Half' } },
+		{ e_phnum: { type: 'Elf_Half' } },
+		{ e_shentsize: { type: 'Elf_Half' } },
+		{ e_shnum: { type: 'Elf_Half' } },
+		{ e_shstrndx: { type: 'Elf_Half' } }
+	];
+
+	var parser = new mod_ctype.Parser({ endian: 'little' });
+	var ehdr = parser.readData(Elf_Ehdr.slice(0, 1), buffer, 0);
+	var hdr = ehdr.e_ident;
+
+	for (i = 0; i < constants.SELFMAG; i++) {
+		if (hdr[constants['EI_MAG' + i]] != constants['ELFMAG' + i]) {
+			err('mismatch at magic ' + i);
+			return (false);
+		}
+	}
+
+	switch (hdr[constants.EI_CLASS]) {
+	case constants.ELFCLASS32:
+		width = '32';
+		break;
+	case constants.ELFCLASS64:
+		width = '64';
+		break;
+	default:
+		err('unknown class ' + hdr[constants.EI_CLASS]);
+		return (false);
+	}
+
+	switch (hdr[constants.EI_DATA]) {
+	case constants.ELFDATA2LSB:
+		endianness = 'little';
+		break;
+	case constants.ELFDATA2MSB:
+		endianness = 'big';
+		break;
+	default:
+		err('unknown data class ' + hdr[constants.EI_DATA]);
+		return (false);
+	}
+
+	parser = new mod_ctype.Parser({ endian: endianness });
+
+	var types = {
+		Elf_Addr: 'uint' + width + '_t',
+		Elf_Off: 'uint' + width + '_t',
+		Elf_Half: 'uint16_t',
+		Elf_Word: 'uint32_t',
+		Elf_Sword: 'int32_t',
+		Elf_Xword: 'uint64_t',
+		Elf_Sxword: 'int64_t'
+	};
+
+	for (t in types)
+		parser.typedef(t, types[t]);
+
+	var ehdr = parser.readData(Elf_Ehdr, buffer, 0);
+
+	if (ehdr.e_type != constants.ET_CORE)
+		return (false);
+
+	return (true);
+}
+
+var isDump = function (buffer)
+{
+	var parser = new mod_ctype.Parser({ endian: 'little' });
+
+	var utsname = [
+		{ sysname: { type: 'char[257]' } },
+		{ nodename: { type: 'char[257]' } },
+		{ release: { type: 'char[257]' } },
+		{ version: { type: 'char[257]' } },
+		{ machine: { type: 'char[257]' } }
+	];
+
+	var dumphdr = [
+		{ dump_magic: { type: 'uint32_t' } },
+		{ dump_version: { type: 'uint32_t' } },
+		{ dump_flags: { type: 'uint32_t' } },
+		{ dump_wordsize: { type: 'uint32_t' } },
+		{ dump_start: { type: 'offset_t' } },
+		{ dump_ksyms: { type: 'offset_t' } },
+		{ dump_pfn: { type: 'offset_t' } },
+		{ dump_map: { type: 'offset_t' } },
+		{ dump_data: { type: 'offset_t' } },
+		{ dump_utsname: { type: 'struct utsname' } },
+		{ dump_platform: { type: 'char[257]' } },
+		{ dump_panicstring: { type: 'char[202]' } },
+		{ dump_crashtime: { type: 'time_t' } },
+		{ dump_pageshift: { type: 'int64_t' } },
+		{ dump_pagesize: { type: 'int64_t' } },
+		{ dump_hashmask: { type: 'int64_t' } },
+		{ dump_nvtop: { type: 'int64_t' } },
+		{ dump_npages: { type: 'pgcnt_t' } },
+		{ dump_ksyms_size: { type: 'size_t' } },
+		{ dump_ksyms_csize: { type: 'size_t' } },
+		{ dump_fm_panic: { type: 'uint32_t' } },
+		{ dump_uuid: { type: 'char[37]' } },
+	];
+
+	var types = {
+		size_t: 'uint64_t',
+		time_t: 'int64_t',
+		offset_t: 'uint64_t',
+		pgcnt_t: 'uint64_t'
+	};
+
+	for (t in types)
+		parser.typedef(t, types[t]);
+
+	parser.typedef('struct utsname', utsname);
+
+	dumphdr = parser.readData(dumphdr, buffer, 0);
+	console.log(dumphdr.dump_utsname.version.toString());
+	console.log(dumphdr.dump_uuid.toString());
+	console.log(util.inspect(dumphdr));
+}
+
+checkError = function (err)
+{
+	if (err)
+		fatal(err.toString());
+}
+
+jobWait = function (client, jobid, cb)
+{
+	status('waiting for completion of job ' + jobid);
+
+	var check = function () {
+		client.job(jobid, function (err, job) {
+			checkError(err);
+
+			if (job.state == 'running' || job.state == 'queued') {
+				status('job ' + jobid + ' is running');
+				again();
+			} else if (job.state == 'done') {
+				status('job ' + jobid +  ' has completed');
+				cb(job);
+	 		} else {
+				fatal('job ' + jobid + ' failed: ' +
+				    util.inspect(job));
+			}
+		});
+	};
+
+	var again = function () {
+		setTimeout(check, 100);
+	};
+
+	check();
+};
+
+jobOutput = function (client, cb)
+{
+	var fetchOutput = function (job, key) {
+		client.get(key, function (err, stream, res) {
+			checkError(err);
+
+			var output = '';
+
+			stream.on('data', function (data) {
+				output += data;
+			});
+
+			stream.on('end', function () {
+				cb(output);
+			});
+		});
+	};
+
+	return (function (job) {
+		client.jobOutput(job.id, function (err, out) {
+			checkError(err);
+			out.on('key', function (k) { fetchOutput(job, k); });
+		});
+	});
+}
+
+jobOneKey = function (client, key, cmd, cb)
+{
+	var job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
+
+	client.createJob(job, function (err, id) {
+		checkError(err);
+
+		status('adding key to job ' + id);
+
+		client.addJobKey(id, key, function (err) {
+			checkError(err);
+
+			client.endJob(id, function (err) {
+				checkError(err);
+				status('processing job ' + id);
+				jobWait(client, id, cb);
+			});
+		});
+	});
+};
+
+jobAllKeys = function (client, job, cb)
+{
+	var keys = [];
+
+	var add = function (id, dir) {
+		status('adding key ' + dir.name + ' to job ' + id);
+		keys.push([ thoth.path, dir.name, 'info.json' ].join('/'));
+	};
+
+	client.createJob(job, function (err, id) {
+		checkError(err);
+
+		status('created job ' + id);
+
+		client.ls(thoth.path, function (err, res) {
+			checkError();
+
+			res.on('directory', function (dir) { add(id, dir); });
+
+			res.on('end', function () {
+				client.addJobKey(id, keys, { end: true },
+				    function (err) {
+					checkError(err);
+					jobWait(client, id, cb);
+				});
+			});
+		});
+	});
+};
+
+jobFromSpec = function (client, argv, opts, cb)
+{
+	/*
+	 * Our job is going to be to all information for all specified dumps.
+	 */
+	var cmd = 'cat $MANTA_INPUT_FILE ';
+	var illegal = undefined;
+	var i;
+
+	for (i = 0; i < argv.length; i++) {
+		var filter = argv[i].split('=');
+
+		cmd += ' | ';
+
+		if (filter.length != 2) {
+			if (!opts.aggregate)
+				fatal('dump specification must be "prop=val"');
+	
+			if (i != argv.length - 1)
+				fatal('aggregation property must be last');
+
+			cmd += 'json ' + argv[i];
+			break;
+		}
+
+		/*
+		 * This is one million percent ghetto, but if we see a '*',
+		 * we'll turn it into a proper regular expression.
+		 */
+		if (filter[1].indexOf('*') != -1) {
+			illegal = filter[1].match(/([.+?^=!:${}()|[\]\/\\])/);
+
+			if (illegal)
+				break;
+
+			cmd += 'json -c \'' + filter[0] + '.match(/^' +
+			    filter[1].replace(/\*/g, '.*') + '$/)\'';
+		} else {
+			illegal = filter[1].match(/["']/);
+
+			if (illegal)
+				break;
+
+			cmd += 'json -c \'' + filter[0] + '=="' +
+			    filter[1] + '"\'';
+		}
+	}
+
+	if (opts.aggregate && i == argv.length)
+		fatal('must supply an aggregation property');
+
+	if (illegal) {
+		fatal('"' + argv[i] + '" contains illegal ' +
+		    'character \'' + illegal[0] +
+		    '\' at index ' + illegal.index);
+	}
+
+	/*
+	 * If we're aggregating, we want to generate JSON output.
+	 */
+	var aggregate = 'sort | uniq -c | sort -n | sed \'s/"/\\\\"/g\' | ' +
+	    'awk \'BEGIN{printf("{");} ' +
+	    '{ printf("%s\\"%s\\": %s", NR > 1 ? ",\\n" : "\\n", $2, $1)} ' +
+	    'END{printf("}")}\' | json';
+
+	job = { phases: [ { exec: cmd, type: 'storage-map' },
+	    { exec: opts.aggregate ? aggregate : 'json -g',
+	    type: 'reduce' } ] };
+
+	jobAllKeys(client, job, jobOutput(client, cb));
+}
+
+processCore = function (client, stat, base, dump, cb)
+{
+	var elfdump = 'elfdump -n $MANTA_INPUT_FILE | ';
+	var json = '/tmp/json.$$';
+	var quotestr = 'sed \'s/"/\\\"/g\'';
+
+	var dumpfield = function (f) {
+		return (elfdump + 'awk \'{ if ($1 == "' + f + ':") ' +
+		    '{ print $2; exit(0) } }\' | ' + quotestr);
+	};
+
+	var dumpline = function (f) {
+		return (elfdump + 'awk \'{ if ($1 == "' + f + ':") { ' +
+		    'print $0; exit(0); } }\' | cut -d: -f2 | ' +
+		    'sed \'s/^[ ]*//g\' | ' + quotestr);
+	};
+
+	var echo = function (f) {
+		return ('echo \'' + f + '\'');
+	};
+
+	var fields = {
+		name: echo(base),
+		dump: echo(dump),
+		pid: dumpfield('pr_pid'),
+		cmd: dumpline('pr_fname'),
+		psargs: dumpline('pr_psargs'),
+		platform: dumpfield('version'),
+		node: dumpfield('nodename'),
+		time: echo((stat.ctime.valueOf() / 1000) + '')
+	};
+
+	cmd = 'echo { > ' + json + '; ';
+
+	for (f in fields) {
+		cmd += fields[f] + '| awk \'{ printf("\\t\\"' + f +
+		    '\\": \\"%s\\",\\n", $0) }\' >> ' + json + ';'
+	}
+
+	cmd += 'echo \'\t"type": "core"\' >> ' + json + '; ';
+	cmd += 'echo } >> ' + json + '; ';
+	cmd += 'mput -f ' + json + ' ' + base + '/info.json';
+
+	job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
+
+	status('creating job to process ' + mod_path.basename(base));
+
+	client.createJob(job, function (err, id) {
+		checkError(err);
+
+		status('adding key to job ' + id);
+
+		client.addJobKey(id, dump, function (err) {
+			checkError(err);
+			status('processing ' + mod_path.basename(base));
+
+			client.endJob(id, function (err) {
+				checkError(err);
+				jobWait(client, id, cb);
+			});
+		});
+	});
+};
+
+var uncompressCore = function (client, stat, base, dump, cb)
+{
+	cmd = 'gunzip -cd $MANTA_INPUT_FILE > /var/tmp/gunzip.$$ ;'
+	cmd += 'mput -f /var/tmp/gunzip.$$ ' + dump;
+
+	status('creating job to uncompress ' + mod_path.basename(base));
+	jobOneKey(client, dump + '.gz', cmd,
+	    function () { processCore(client, stat, base, dump, cb); });
+}
+
+var putCore = function (client, file, stat, base, cb)
+{
+	/*
+	 * We have the dump verified and we have the directory successfully
+	 * created; time to actually upload the dump.
+	 */
+	var stream = mod_fs.createReadStream(file);
+	var dump = base + '/' + mod_path.basename(file);
+	var gzip = mod_zlib.createGzip();
+
+	status('uploading ' + mod_path.basename(dump) + ' to ' +
+	    mod_path.basename(base));
+
+	pipe = stream.pipe(gzip);
+	pipe.pause();
+
+	stream.on('open', function () {
+		client.put(dump + '.gz', gzip, { copies: 2 }, function (err) {
+			if (err)
+				fatal(err.message);
+
+			uncompressCore(client, stat, base, dump, cb);
+		});
+	});
+};
+
+var uploadCore = function (client, file, stat, cb)
+{
+	/*
+	 * We have what we believe to be a valid core; hash the entire core
+	 * file, and then determine if the dump already exists or not.
+	 */
+	var sum = mod_crypto.createHash('md5');
+	var stream = mod_fs.ReadStream(file);
+	var path = [ thoth.path ], digest;
+
+	stream.on('data', function (d) { sum.update(d) });
+	stream.on('end', function () {
+		path.push(digest = sum.digest('hex'));
+		var base = path.join('/');
+
+		status('creating ' + digest);
+
+		client.mkdirp(base, function (err) {
+			checkError(err);
+			putCore(client, file, stat, base, cb);
+		});
+	});
+};
+
+var infoGet = function (client, dump, cb)
+{
+	var key = [ thoth.path, dump, 'info.json' ].join('/');
+
+	client.get(key, function (err, stream, res) {
+		checkError(err);
+
+		var output = '';
+
+		stream.on('data', function (data) {
+			output += data;
+		});
+
+		stream.on('end', function () {
+			cb(output);
+		});
+	});
+}
+
+handlers.upload = function (client, argv)
+{
+	var file = argv[0];
+	var minsize = 8192, fd;
+	var stat;
+
+	/*
+	 * First, make sure that the file actually exists.
+	 */
+	try {
+		fd = mod_fs.openSync(file, 'r');
+	} catch (err) {
+		fatal('couldn\'t open "' + file + '": ' + err);
+	}
+
+	stat = mod_fs.fstatSync(fd);
+
+	if (stat.size < minsize) 
+		fatal('"' + file + '" is too small to be a core or crash dump');
+
+	var buffer = new Buffer(minsize);
+	mod_fs.readSync(fd, buffer, 0, minsize, 0);
+	mod_fs.closeSync(fd);
+
+	var next = function () {
+		if (argv.length == 1)
+			process.exit(0);
+
+		handlers.upload(client, argv.slice(1, argv.length));
+	};
+		
+	if (isCore(buffer)) {
+		uploadCore(client, file, stat, next);
+	} else if (isDump(buffer)) {
+		uploadDump(client, file, next);
+	} else {
+		fatal('"' + file + '" is neither a core nor a crash dump');
+	}
+}
+
+handlers.ls = function (client, argv)
+{
+	status('creating job to list');
+
+	var fmt = '%-32s %-5s %-19s %s';
+
+	jobFromSpec(client, argv, { aggregate: false }, function (output) {
+		var dumps = JSON.parse(output);
+
+		console.log(sprintf(fmt,
+		    'DUMP', 'TYPE', 'TIME', 'NODE/CMD'));
+
+		for (i = 0; i < output.length; i++) {
+			var dump = output[i];
+			var t = new Date(dump.time * 1000);
+
+			console.log(sprintf(fmt,
+			    mod_path.basename(dump.name),
+			    dump.type,
+			    t.toISOString().substr(0, 19),
+			    dump.type == 'core' ? dump.cmd : dump.node));
+		}
+
+		process.exit(0);
+	});
+}
+
+handlers.info = function (client, argv)
+{
+	var output = function (out) {
+		console.log(out);
+		process.exit(0);
+	};
+
+	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
+		infoGet(client, argv[0], output);
+	} else {
+		jobFromSpec(client, argv, { aggregate: false }, output);
+	}
+}
+
+handlers.keys = function (client, argv)
+{
+	var output = function (out) {
+		var dumps = JSON.parse(out), i;
+
+		if (!(dumps instanceof Array))
+			dumps = [ dumps ];
+
+		for (i = 0; i < dumps.length; i++)
+			console.log(dumps[i].dump);
+
+		process.exit(0);
+	};
+
+	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
+		infoGet(client, argv[0], output);
+	} else {
+		jobFromSpec(client, argv, { aggregate: false }, output);
+	}
+}
+
+handlers.report = function (client, argv)
+{
+	jobFromSpec(client, argv, { aggregate: true }, function (output) {
+		console.log(output);
+		process.exit(0);
+	});
+}
+
+var main = function()
+{
+	/*
+ 	 * First, attempt to talk to 
+	 */
+	var opts = {};
+
+	var mvars = [ 'MANTA_URL', 'MANTA_USER', 'MANTA_KEY_ID' ];
+	var i, argv = process.argv;
+
+	for (i = 0; i < mvars.length; i++) {
+		if (!process.env[mvars[i]]) {
+			fatal('expected ' + mvars[i] +
+			    ' environment variable to be set');
+		}
+	}
+
+	opts.log = mod_bunyan.createLogger({
+		name: mod_path.basename(process.argv[1]),
+		level: (process.env.LOG_LEVEL || 'info'),
+		stream: process.stderr,
+		serializers: mod_restify.bunyan.serializers
+	});
+
+	var client = mod_manta.createBinClient(opts);
+
+	if (argv.length < 3)
+		usage('expected command');
+
+	for (i = 0; i < thoth.cmds.length; i++) {
+		var expected = 0;
+
+		if (argv[2] != thoth.cmds[i].token)
+			continue;
+
+		argv = argv.slice(3, argv.length);
+
+		for (opt in thoth.cmds[i].params) {
+			if (++expected > argv.length)
+				usage('expected [' + opt + ']');
+		}
+		
+		handlers[thoth.cmds[i].token].call(this, client, argv);
+		break;
+	}
+
+	if (i == thoth.cmds.length)
+		usage('unrecognized command "' + argv[2] + '"');
+};
+
+main();
+
