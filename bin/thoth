@@ -95,7 +95,7 @@ var isCore = function (buffer)
 
 	var err = function (msg) {
 		if (thoth.verbose) 
-			warn(msg);
+			warn('not an ELF file: ' + msg);
 	};
 
 	var constants = {
@@ -519,9 +519,22 @@ var isCore = function (buffer)
 	return (true);
 }
 
-var isDump = function (buffer)
+var isCrash = function (buffer, outhdr)
 {
 	var parser = new mod_ctype.Parser({ endian: 'little' });
+	var hdr, p;
+
+	var constants = {
+		DUMP_MAGIC: 0xdefec8ed,
+		DF_VALID: 0x00000001,
+		DF_COMPLETE: 0x00000002,
+		DF_LIVE: 0x00000004,
+		DF_COMPRESSED: 0x00000008,
+		DF_KERNEL: 0x00010000,
+		DF_ALL: 0x00020000,
+		DF_CURPROC: 0x00040000,
+		DF_CONTENT: 0xffff0000
+	};
 
 	var utsname = [
 		{ sysname: { type: 'char[257]' } },
@@ -568,10 +581,28 @@ var isDump = function (buffer)
 
 	parser.typedef('struct utsname', utsname);
 
-	dumphdr = parser.readData(dumphdr, buffer, 0);
-	console.log(dumphdr.dump_utsname.version.toString());
-	console.log(dumphdr.dump_uuid.toString());
-	console.log(util.inspect(dumphdr));
+	hdr = parser.readData(dumphdr, buffer, 0);
+
+	if (hdr.dump_magic != constants.DUMP_MAGIC) {
+		status('not a dump; magic mismatch (expected ' +
+		    constants.DUMP_MAGIC + '; found ' + hdr.dump_magic + ')');
+		return (false);
+	}
+
+	if (!(hdr.dump_flags & constants.DF_COMPLETE)) {
+		status('not a complete dump');
+		return (false);
+	}
+
+	if (!(hdr.dump_flags & constants.DF_COMPRESSED)) {
+		status('dump is not compressed');
+		return (false);
+	}
+	
+	for (p in hdr)
+		outhdr[p] = hdr[p];
+
+	return (true);
 }
 
 checkError = function (err)
@@ -757,6 +788,14 @@ jobFromSpec = function (client, argv, opts, cb)
 	jobAllKeys(client, job, jobOutput(client, cb));
 }
 
+processStack = function ()
+{
+	return ('mdb -e \'$c 0\' $MANTA_INPUT_FILE 2> /dev/null | ' +
+	    'awk \'BEGIN{printf("\\t\\"stack\\": [ ")} ' +
+	    '{printf("%s\\"%s\\"", NR > 1 ? ", " : "", $0)} ' +
+	    'END{printf(" ],\\n")}\'');
+}
+
 processCore = function (client, stat, base, dump, cb)
 {
 	var elfdump = 'elfdump -n $MANTA_INPUT_FILE | ';
@@ -786,16 +825,23 @@ processCore = function (client, stat, base, dump, cb)
 		psargs: dumpline('pr_psargs'),
 		platform: dumpfield('version'),
 		node: dumpfield('nodename'),
-		time: echo((stat.ctime.valueOf() / 1000) + '')
+		time: { val: echo((stat.ctime.valueOf() / 1000) + '') }
 	};
 
-	cmd = 'echo { > ' + json + '; ';
+	var cmd = 'echo { > ' + json + '; ';
 
 	for (f in fields) {
+		if (fields[f] instanceof Object) {
+			cmd += fields[f].val + '| awk \'{ printf("\\t\\"' + f +
+			    '\\": %s,\\n", $0) }\' >> ' + json + ';'
+			continue;
+		}
+
 		cmd += fields[f] + '| awk \'{ printf("\\t\\"' + f +
 		    '\\": \\"%s\\",\\n", $0) }\' >> ' + json + ';'
 	}
 
+	cmd += processStack() + ' >> ' + json + '; ';
 	cmd += 'echo \'\t"type": "core"\' >> ' + json + '; ';
 	cmd += 'echo } >> ' + json + '; ';
 	cmd += 'mput -f ' + json + ' ' + base + '/info.json';
@@ -829,7 +875,7 @@ var uncompressCore = function (client, stat, base, dump, cb)
 	status('creating job to uncompress ' + mod_path.basename(base));
 	jobOneKey(client, dump + '.gz', cmd,
 	    function () { processCore(client, stat, base, dump, cb); });
-}
+};
 
 var putCore = function (client, file, stat, base, cb)
 {
@@ -878,6 +924,120 @@ var uploadCore = function (client, file, stat, cb)
 			checkError(err);
 			putCore(client, file, stat, base, cb);
 		});
+	});
+};
+
+var processCrash = function (client, hdr, base, dump, cb)
+{
+	var mdb = function (cmd) {
+		return ('mdb -e "' + cmd + '" $MANTA_INPUT_FILE ' +
+		    '2> /dev/null | ');
+	};
+
+	var json = '/tmp/json.$$';
+
+	var echo = function (f) {
+		return ('echo \'' + f + '\'');
+	};
+
+	var dumpfield = function (f) {
+		return (mdb('utsname::print') + 'grep "' + f + ' = " | ' +
+		    'cut -d\\" -f2');
+	};
+
+	var fields = {
+		name: echo(base),
+		dump: echo(dump),
+		platform: dumpfield('version'),
+		node: dumpfield('nodename'),
+		time: { val: mdb('time/E') + 'tail -1 | awk \'{print $2}\'' }
+	};
+
+	var cmd = 'echo { > ' + json + '; ';
+
+	for (f in fields) {
+		if (fields[f] instanceof Object) {
+			cmd += fields[f].val + '| awk \'{ printf("\\t\\"' + f +
+			    '\\": %s,\\n", $0) }\' >> ' + json + ';'
+			continue;
+		}
+
+		cmd += fields[f] + '| awk \'{ printf("\\t\\"' + f +
+		    '\\": \\"%s\\",\\n", $0) }\' >> ' + json + ';'
+	}
+
+	cmd += processStack() + ' >> ' + json + '; ';
+	cmd += 'echo \'\t"type": "crash"\' >> ' + json + '; ';
+	cmd += 'echo } >> ' + json + '; ';
+	cmd += 'mput -f ' + json + ' ' + base + '/info.json';
+
+	job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
+
+	status('creating job to process ' + mod_path.basename(base));
+
+	client.createJob(job, function (err, id) {
+		checkError(err);
+
+		status('adding key to job ' + id);
+
+		client.addJobKey(id, dump, function (err) {
+			checkError(err);
+			status('processing ' + mod_path.basename(base));
+
+			client.endJob(id, function (err) {
+				checkError(err);
+				jobWait(client, id, cb);
+			});
+		});
+	});
+}
+
+var uncompressCrash = function (client, hdr, base, dump, cb)
+{
+	var vmcore = base + '/vmcore.0';
+	var cmd = 'dir=/var/tmp/savecore.$$ ;';
+	cmd += 'mkdir $dir ; savecore -f ' + dump + ' -d $dir ; ';
+	cmd += 'mput -f $dir/vmcore* ' + vmcore;
+
+	status('creating job to savecore ' + mod_path.basename(base));
+	jobOneKey(client, dump, cmd,
+	    function () { processCrash(client, hdr, base, vmcore, cb); });
+};
+
+var putCrash = function (client, file, hdr, base, cb)
+{
+	var stream = mod_fs.createReadStream(file);
+	var dump = base + '/' + mod_path.basename(file);
+
+	stream.pause();
+
+	stream.on('open', function () {
+		client.put(dump, stream, { copies: 2 }, function (err) {
+			checkError(err);
+			uncompressCrash(client, hdr, base, dump, cb);
+		});
+	});
+};
+
+var uploadCrash = function (client, file, hdr, cb)
+{
+	/*
+	 * To hash a dump, we hash only the dump header.  This contains
+	 * enough information (and in particular, time stamp, node name,
+	 * and number of pages) that an md5 should be sufficiently unique.
+	 */
+	var sum = mod_crypto.createHash('md5');
+	var path = [ thoth.path ], digest;
+
+	sum.update(util.inspect(hdr));
+	path.push(digest = sum.digest('hex'));
+	var base = path.join('/');
+	
+	status('creating ' + digest);
+	
+	client.mkdirp(base, function (err) {
+		checkError(err);
+		putCrash(client, file, hdr, base, cb);
 	});
 };
 
@@ -931,10 +1091,12 @@ handlers.upload = function (client, argv)
 		handlers.upload(client, argv.slice(1, argv.length));
 	};
 		
+	var hdr = {};
+
 	if (isCore(buffer)) {
 		uploadCore(client, file, stat, next);
-	} else if (isDump(buffer)) {
-		uploadDump(client, file, next);
+	} else if (isCrash(buffer, hdr)) {
+		uploadCrash(client, file, hdr, next);
 	} else {
 		fatal('"' + file + '" is neither a core nor a crash dump');
 	}
@@ -952,8 +1114,8 @@ handlers.ls = function (client, argv)
 		console.log(sprintf(fmt,
 		    'DUMP', 'TYPE', 'TIME', 'NODE/CMD'));
 
-		for (i = 0; i < output.length; i++) {
-			var dump = output[i];
+		for (i = 0; i < dumps.length; i++) {
+			var dump = dumps[i];
 			var t = new Date(dump.time * 1000);
 
 			console.log(sprintf(fmt,
@@ -1012,9 +1174,6 @@ handlers.report = function (client, argv)
 
 var main = function()
 {
-	/*
- 	 * First, attempt to talk to 
-	 */
 	var opts = {};
 
 	var mvars = [ 'MANTA_URL', 'MANTA_USER', 'MANTA_KEY_ID' ];
