@@ -22,22 +22,20 @@ var thoth = {
 	path: '/' + process.env.MANTA_USER + '/stor/thoth',
 	verbose: true,
 	cmds: [
-		{ token: 'upload', params: { file: true },
+		{ token: 'upload', params: '[file]',
 		    usage: 'upload the specified core or crash dump' },
-		{ token: 'info', params: { 'dump|spec': true },
+		{ token: 'info', params: '[dump]',
 		    usage: 'print information about the specified dump(s)' },
-		{ token: 'ls', options: { 'dump|spec': true },
+		{ token: 'ls', params: '[[dump]]',
 		    usage: 'list dumps matching the specification' },
-		{ token: 'keys', params: { 'dump|spec': true },
+		{ token: 'keys', params: '[dump]',
 		    usage: 'print object key(s) for specified dump(s)' },
-		{ token: 'report', options: { 'dump': true },
-		    params: { 'spec': true },
+		{ token: 'report', params: '[dump] [agg]',
 		    usage: 'report on dumps matching the specification' },
-		{ token: 'diagnose', params: { dump: true, ticket: true },
-		    usage: 'diagnose the specified dump as the ' +
-			'specified ticket' },
-		{ token: 'undiagnose', params: { dump: true },
-		    usage: 'undiagnose the specified dump(s)' }
+		{ token: 'set', params: '[dump] [prop] [val]',
+		    usage: 'set prop to val for the specified dump(s)' },
+		{ token: 'unset', params: '[dump] [prop]',
+		    usage: 'unset prop for the specified dump(s)' }
 	]
 };
 
@@ -69,14 +67,8 @@ var usage = function (msg)
         console.error('Usage: ' + c + ' [command] [params]\n');
 
 	for (i = 0; i < thoth.cmds.length; i++) {
-		var cmd = thoth.cmds[i].token + ' ';
+		var cmd = thoth.cmds[i].token + ' ' + thoth.cmds[i].params;
 
-		for (opt in thoth.cmds[i].params)
-			cmd += '[' + opt + '] ';
-
-		for (opt in thoth.cmds[i].options)
-			cmd += '[[' + opt + ']] ';
-		
 		console.error(sprintf('  %-26s %s',
 		    cmd, thoth.cmds[i].usage));
         }
@@ -623,7 +615,8 @@ jobWait = function (client, jobid, cb)
 				status('job ' + jobid + ' is running');
 				again();
 			} else if (job.state == 'done' &&
-			    job.stats.errors === 0) {
+			    (job.stats.errors === 0 || (job.phases.length > 1 &&
+			    job.stats.outputs == 1))) {
 				status('job ' + jobid +  ' has completed');
 				cb(job);
 	 		} else {
@@ -843,7 +836,8 @@ processCore = function (client, stat, base, dump, cb)
 	}
 
 	cmd += processStack() + ' >> ' + json + '; ';
-	cmd += 'echo \'\t"type": "core"\' >> ' + json + '; ';
+	cmd += 'echo \'\t"type": "core",\' >> ' + json + '; ';
+	cmd += 'echo \'\t"properties": {}\' >> ' + json + '; ';
 	cmd += 'echo } >> ' + json + '; ';
 	cmd += 'mput -f ' + json + ' ' + base + '/info.json';
 
@@ -990,7 +984,8 @@ var processCrash = function (client, stat, base, dump, cb)
 	}
 
 	cmd += processStack() + ' >> ' + json + '; ';
-	cmd += 'echo \'\t"type": "crash"\' >> ' + json + '; ';
+	cmd += 'echo \'\t"type": "crash",\' >> ' + json + '; ';
+	cmd += 'echo \'\t"properties": {}\' >> ' + json + '; ';
 	cmd += 'echo } >> ' + json + '; ';
 	cmd += 'mput -f ' + json + ' ' + base + '/info.json';
 
@@ -1198,6 +1193,93 @@ handlers.report = function (client, argv)
 		console.log(output);
 		process.exit(0);
 	});
+};
+
+var setProp = function (client, keys, prop, val)
+{
+	var tmp = '/tmp/tmp.json';
+	var json = '/tmp/new.json';
+
+	var cmd = 'echo \'{ \"properties\": { \"' +
+	    prop + '\": \"' + val + '\"} }\' > ' + tmp + '; ';
+
+	cmd += 'cat $MANTA_INPUT_FILE ' + tmp + ' | json --deep-merge > ' +
+	    json + ';';
+
+	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT'; 
+
+	jobOneKey(client, keys, cmd, function () { process.exit(0) });
+}
+
+var unsetProp = function (client, keys, prop, val)
+{
+	var json = '/tmp/new.json';
+	var cmd = 'cat $MANTA_INPUT_FILE | json -e "this.properties.' +
+	    prop + '=undefined" > ' + json + '; ';
+	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT'; 
+
+	jobOneKey(client, keys, cmd, function () { process.exit(0) });
+}
+
+handlers.set = function (client, argv)
+{
+	var val = argv.pop();
+	var prop = argv.pop();
+	var keys = [];
+
+	if (!val || !prop)
+		fatal('expected both property to set and value');
+
+	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
+		keys.push([ thoth.path, argv[0], 'info.json' ].join('/'));
+
+		setProp(client, keys, prop, val);
+		return;
+	}
+
+	/*
+	 * This is a little janky to do this in two passes.
+	 */
+	argv.push('name');
+
+	jobFromSpec(client, argv, { aggregate: true }, function (output) {
+		dumps = JSON.parse(output);
+
+		for (name in dumps)
+			keys.push([ name, 'info.json' ].join('/'));
+
+		setProp(client, keys, prop, val);
+	});
+}
+
+handlers.unset = function (client, argv)
+{
+	var prop = argv.pop();
+	var keys = [];
+
+	if (!prop)
+		fatal('expected a property to unset');
+
+	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
+		keys.push([ thoth.path, argv[0], 'info.json' ].join('/'));
+
+		unsetProp(client, keys, prop);
+		return;
+	}
+
+	/*
+	 * This is a little janky to do this in two passes.
+	 */
+	argv.push('name');
+
+	jobFromSpec(client, argv, { aggregate: true }, function (output) {
+		dumps = JSON.parse(output);
+
+		for (name in dumps)
+			keys.push([ name, 'info.json' ].join('/'));
+
+		unsetProp(client, keys, prop);
+	});
 }
 
 var main = function()
@@ -1227,18 +1309,10 @@ var main = function()
 		usage('expected command');
 
 	for (i = 0; i < thoth.cmds.length; i++) {
-		var expected = 0;
-
 		if (argv[2] != thoth.cmds[i].token)
 			continue;
 
 		argv = argv.slice(3, argv.length);
-
-		for (opt in thoth.cmds[i].params) {
-			if (++expected > argv.length)
-				usage('expected [' + opt + ']');
-		}
-		
 		handlers[thoth.cmds[i].token].call(this, client, argv);
 		break;
 	}
