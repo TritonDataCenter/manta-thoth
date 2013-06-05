@@ -37,7 +37,7 @@ var thoth = {
 		    usage: 'diagnose the specified dump as the ' +
 			'specified ticket' },
 		{ token: 'undiagnose', params: { dump: true },
-		    usage: 'undiagnose the specified dump(s)' },
+		    usage: 'undiagnose the specified dump(s)' }
 	]
 };
 
@@ -622,7 +622,8 @@ jobWait = function (client, jobid, cb)
 			if (job.state == 'running' || job.state == 'queued') {
 				status('job ' + jobid + ' is running');
 				again();
-			} else if (job.state == 'done') {
+			} else if (job.state == 'done' &&
+			    job.stats.errors === 0) {
 				status('job ' + jobid +  ' has completed');
 				cb(job);
 	 		} else {
@@ -877,6 +878,26 @@ var uncompressCore = function (client, stat, base, dump, cb)
 	    function () { processCore(client, stat, base, dump, cb); });
 };
 
+var progressBar = function (dump, stream, stat)
+{
+	if (!process.stderr.isTTY)
+		return;
+
+	var bar = new mod_manta.ProgressBar({
+		filename: 'thoth: ' + mod_path.basename(dump),
+		size: stat.size,
+		nosize: false 
+	});
+
+	stream.on('data', function (data) {
+		bar.advance(data.length);
+	});
+
+	stream.once('end', function () {
+		bar.end();
+	});
+};
+
 var putCore = function (client, file, stat, base, cb)
 {
 	/*
@@ -889,6 +910,8 @@ var putCore = function (client, file, stat, base, cb)
 
 	status('uploading ' + mod_path.basename(dump) + ' to ' +
 	    mod_path.basename(base));
+
+	progressBar(dump, stream, stat);
 
 	pipe = stream.pipe(gzip);
 	pipe.pause();
@@ -927,7 +950,7 @@ var uploadCore = function (client, file, stat, cb)
 	});
 };
 
-var processCrash = function (client, hdr, base, dump, cb)
+var processCrash = function (client, stat, base, dump, cb)
 {
 	var mdb = function (cmd) {
 		return ('mdb -e "' + cmd + '" $MANTA_INPUT_FILE ' +
@@ -992,34 +1015,39 @@ var processCrash = function (client, hdr, base, dump, cb)
 	});
 }
 
-var uncompressCrash = function (client, hdr, base, dump, cb)
+var uncompressCrash = function (client, stat, base, dump, cb)
 {
 	var vmcore = base + '/vmcore.0';
 	var cmd = 'dir=/var/tmp/savecore.$$ ;';
-	cmd += 'mkdir $dir ; savecore -f ' + dump + ' -d $dir ; ';
+	cmd += 'mkdir $dir ; savecore -f $MANTA_INPUT_FILE -d $dir ; ';
 	cmd += 'mput -f $dir/vmcore* ' + vmcore;
 
 	status('creating job to savecore ' + mod_path.basename(base));
 	jobOneKey(client, dump, cmd,
-	    function () { processCrash(client, hdr, base, vmcore, cb); });
+	    function () { processCrash(client, stat, base, vmcore, cb); });
 };
 
-var putCrash = function (client, file, hdr, base, cb)
+var putCrash = function (client, file, stat, base, cb)
 {
 	var stream = mod_fs.createReadStream(file);
 	var dump = base + '/' + mod_path.basename(file);
 
 	stream.pause();
 
+	status('uploading ' + mod_path.basename(dump) + ' to ' +
+	    mod_path.basename(base));
+
+	progressBar(dump, stream, stat);
+
 	stream.on('open', function () {
 		client.put(dump, stream, { copies: 2 }, function (err) {
 			checkError(err);
-			uncompressCrash(client, hdr, base, dump, cb);
+			uncompressCrash(client, stat, base, dump, cb);
 		});
 	});
-};
+}
 
-var uploadCrash = function (client, file, hdr, cb)
+var uploadCrash = function (client, file, stat, hdr, cb)
 {
 	/*
 	 * To hash a dump, we hash only the dump header.  This contains
@@ -1034,10 +1062,10 @@ var uploadCrash = function (client, file, hdr, cb)
 	var base = path.join('/');
 	
 	status('creating ' + digest);
-	
+
 	client.mkdirp(base, function (err) {
 		checkError(err);
-		putCrash(client, file, hdr, base, cb);
+		putCrash(client, file, stat, base, cb);
 	});
 };
 
@@ -1096,7 +1124,7 @@ handlers.upload = function (client, argv)
 	if (isCore(buffer)) {
 		uploadCore(client, file, stat, next);
 	} else if (isCrash(buffer, hdr)) {
-		uploadCrash(client, file, hdr, next);
+		uploadCrash(client, file, stat, hdr, next);
 	} else {
 		fatal('"' + file + '" is neither a core nor a crash dump');
 	}
