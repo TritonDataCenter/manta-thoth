@@ -659,9 +659,14 @@ jobOutput = function (client, cb)
 	});
 }
 
-jobOneKey = function (client, key, cmd, cb)
+jobOneKey = function (client, key, cmd, cb, opts)
 {
 	var job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
+
+	if (opts) {
+		for (var opt in opts)
+			job.phases[0][opt] = opts[opt];
+	}
 
 	client.createJob(job, function (err, id) {
 		checkError(err);
@@ -869,7 +874,8 @@ var uncompressCore = function (client, stat, base, dump, cb)
 
 	status('creating job to uncompress ' + mod_path.basename(base));
 	jobOneKey(client, dump + '.gz', cmd,
-	    function () { processCore(client, stat, base, dump, cb); });
+	    function () { processCore(client, stat, base, dump, cb); },
+	    { disk: 128 });
 };
 
 var progressBar = function (dump, stream, stat)
@@ -910,8 +916,13 @@ var putCore = function (client, file, stat, base, cb)
 	pipe = stream.pipe(gzip);
 	pipe.pause();
 
+	var opts = {
+		copies: 1,
+		headers: { 'max-content-length': stat.size }
+	};
+
 	stream.on('open', function () {
-		client.put(dump + '.gz', gzip, { copies: 2 }, function (err) {
+		client.put(dump + '.gz', gzip, opts, function (err) {
 			if (err)
 				fatal(err.message);
 
@@ -1019,7 +1030,8 @@ var uncompressCrash = function (client, stat, base, dump, cb)
 
 	status('creating job to savecore ' + mod_path.basename(base));
 	jobOneKey(client, dump, cmd,
-	    function () { processCrash(client, stat, base, vmcore, cb); });
+	    function () { processCrash(client, stat, base, vmcore, cb); },
+	    { disk: 512 });
 };
 
 var putCrash = function (client, file, stat, base, cb)
@@ -1034,8 +1046,13 @@ var putCrash = function (client, file, stat, base, cb)
 
 	progressBar(dump, stream, stat);
 
+	var opts = {
+		copies: 1,
+		headers: { 'max-content-length': stat.size }
+	};
+
 	stream.on('open', function () {
-		client.put(dump, stream, { copies: 2 }, function (err) {
+		client.put(dump, stream, opts, function (err) {
 			checkError(err);
 			uncompressCrash(client, stat, base, dump, cb);
 		});
