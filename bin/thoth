@@ -687,30 +687,24 @@ jobOneKey = function (client, key, cmd, cb, opts)
 
 jobAllKeys = function (client, job, cb)
 {
-	var keys = [];
-
-	var add = function (id, dir) {
-		status('adding key ' + dir.name + ' to job ' + id);
-		keys.push([ thoth.path, dir.name, 'info.json' ].join('/'));
-	};
+	/*
+	 * To run a job on all keys, we push an initial object generation phase 
+	 * (paradoxically of type 'reduce') that performs an mls and uses mcat
+	 * to feed those objects as inputs to the next phase.
+	 */
+	var cmd = 'mls ' + thoth.path + ' | awk \'{ printf("' +
+	    thoth.path + '/%s/info.json\\n", $1) }\' | xargs mcat';
+	    
+	job.phases.unshift({ exec: cmd, type: 'reduce' });
 
 	client.createJob(job, function (err, id) {
 		checkError(err);
 
 		status('created job ' + id);
 
-		client.ls(thoth.path, function (err, res) {
-			checkError();
-
-			res.on('directory', function (dir) { add(id, dir); });
-
-			res.on('end', function () {
-				client.addJobKey(id, keys, { end: true },
-				    function (err) {
-					checkError(err);
-					jobWait(client, id, cb);
-				});
-			});
+		client.endJob(id, function (err) {
+			checkError(err);
+			jobWait(client, id, cb);
 		});
 	});
 };
