@@ -28,8 +28,8 @@ var thoth = {
 		    usage: 'print information about the specified dump(s)' },
 		{ token: 'ls', params: '[[dump]]',
 		    usage: 'list dumps matching the specification' },
-		{ token: 'keys', params: '[dump]',
-		    usage: 'print object key(s) for specified dump(s)' },
+		{ token: 'object', params: '[dump]',
+		    usage: 'print object name for specified dump(s)' },
 		{ token: 'report', params: '[dump] [agg]',
 		    usage: 'report on dumps matching the specification' },
 		{ token: 'set', params: '[dump] [prop] [val]',
@@ -86,7 +86,7 @@ var isCore = function (buffer)
 	var width, endianness, hdr;
 
 	var err = function (msg) {
-		if (thoth.verbose) 
+		if (thoth.crazyverbose) 
 			warn('not an ELF file: ' + msg);
 	};
 
@@ -927,30 +927,6 @@ var putCore = function (client, file, stat, base, cb)
 	});
 };
 
-var uploadCore = function (client, file, stat, cb)
-{
-	/*
-	 * We have what we believe to be a valid core; hash the entire core
-	 * file, and then determine if the dump already exists or not.
-	 */
-	var sum = mod_crypto.createHash('md5');
-	var stream = mod_fs.ReadStream(file);
-	var path = [ thoth.path ], digest;
-
-	stream.on('data', function (d) { sum.update(d) });
-	stream.on('end', function () {
-		path.push(digest = sum.digest('hex'));
-		var base = path.join('/');
-
-		status('creating ' + digest);
-
-		client.mkdirp(base, function (err) {
-			checkError(err);
-			putCore(client, file, stat, base, cb);
-		});
-	});
-};
-
 var processCrash = function (client, stat, base, dump, cb)
 {
 	var mdb = function (cmd) {
@@ -1055,33 +1031,63 @@ var putCrash = function (client, file, stat, base, cb)
 	});
 }
 
-var uploadCrash = function (client, file, stat, hdr, cb)
+var openDump = function (name, cb)
 {
-	/*
-	 * To hash a dump, we hash only the dump header.  This contains
-	 * enough information (and in particular, time stamp, node name,
-	 * and number of pages) that an md5 should be sufficiently unique.
-	 */
+	var minsize = 8192, fd;
+	var file = { name: name };
+	var stat;
 	var sum = mod_crypto.createHash('md5');
 	var path = [ thoth.path ], digest;
 
-	sum.update(util.inspect(hdr));
-	path.push(digest = sum.digest('hex'));
-	var base = path.join('/');
-	
-	status('creating ' + digest);
+	try {
+		fd = mod_fs.openSync(name, 'r');
+	} catch (err) {
+		fatal('couldn\'t open "' + name + '": ' + err);
+	}
 
-	client.mkdirp(base, function (err) {
-		checkError(err);
-		putCrash(client, file, stat, base, cb);
-	});
-};
+	file.stat = mod_fs.fstatSync(fd);
+
+	if (file.stat.size < minsize) 
+		fatal('"' + name + '" is too small to be a core or crash dump');
+
+	var buffer = new Buffer(minsize);
+	mod_fs.readSync(fd, buffer, 0, minsize, 0);
+	mod_fs.closeSync(fd);
+
+	file.hdr = {};
+
+	var done = function () {
+		path.push(file.digest = sum.digest('hex'));
+		file.base = path.join('/');
+		cb(file);
+	};
+
+	if (isCore(buffer)) {
+		file.type = 'core';
+
+		var stream = mod_fs.ReadStream(name);
+
+		stream.on('data', function (d) { sum.update(d) });
+		stream.on('end', done);
+	} else if (isCrash(buffer, file.hdr)) {
+		file.type = 'crash';
+
+		/*
+		 * To hash a dump, we hash only the dump header.  This contains
+		 * enough information (and in particular, time stamp, node name,
+		 * and number of pages) that an md5 should be sufficiently
+		 * unique.
+		 */
+		sum.update(util.inspect(file.hdr));
+		done();
+	} else {
+		fatal('"' + name + '" is neither a core nor a crash dump');
+	}
+}
 
 var infoGet = function (client, dump, cb)
 {
-	var key = [ thoth.path, dump, 'info.json' ].join('/');
-
-	client.get(key, function (err, stream, res) {
+	argToInfo(client, dump, function (object, err, stream, res) {
 		checkError(err);
 
 		var output = '';
@@ -1098,27 +1104,10 @@ var infoGet = function (client, dump, cb)
 
 handlers.upload = function (client, argv)
 {
-	var file = argv[0];
-	var minsize = 8192, fd;
-	var stat;
-
-	/*
-	 * First, make sure that the file actually exists.
-	 */
-	try {
-		fd = mod_fs.openSync(file, 'r');
-	} catch (err) {
-		fatal('couldn\'t open "' + file + '": ' + err);
-	}
-
-	stat = mod_fs.fstatSync(fd);
-
-	if (stat.size < minsize) 
-		fatal('"' + file + '" is too small to be a core or crash dump');
-
-	var buffer = new Buffer(minsize);
-	mod_fs.readSync(fd, buffer, 0, minsize, 0);
-	mod_fs.closeSync(fd);
+	put = {
+		crash: putCrash,
+		core: putCore 
+	};
 
 	var next = function () {
 		if (argv.length == 1)
@@ -1126,16 +1115,16 @@ handlers.upload = function (client, argv)
 
 		handlers.upload(client, argv.slice(1, argv.length));
 	};
-		
-	var hdr = {};
 
-	if (isCore(buffer)) {
-		uploadCore(client, file, stat, next);
-	} else if (isCrash(buffer, hdr)) {
-		uploadCrash(client, file, stat, hdr, next);
-	} else {
-		fatal('"' + file + '" is neither a core nor a crash dump');
-	}
+	openDump(argv[0], function (file) {
+		status('creating ' + file.digest);
+
+		client.mkdirp(file.base, function (err) {
+			checkError(err);
+			put[file.type](client,
+			    file.name, file.stat, file.base, next);
+		});
+	});
 }
 
 handlers.ls = function (client, argv)
@@ -1183,7 +1172,7 @@ handlers.info = function (client, argv)
 	}
 }
 
-handlers.keys = function (client, argv)
+handlers.object = function (client, argv)
 {
 	var output = function (out) {
 		var dumps = JSON.parse(out), i;
@@ -1238,6 +1227,23 @@ var unsetProp = function (client, keys, prop, val)
 	jobOneKey(client, keys, cmd, function () { process.exit(0) });
 }
 
+var argToInfo = function (client, arg, cb)
+{
+	var object = [ thoth.path, arg, 'info.json' ].join('/');
+
+	client.get(object, function (err, stream, res) {
+		if (err && err.code == 'ResourceNotFound') {
+			openDump(arg, function (file) { 
+				argToInfo(client, file.digest, cb);
+				return;
+			});
+			return;
+		}
+
+		cb(object, err, stream, res);
+	});
+}
+
 handlers.set = function (client, argv)
 {
 	var val = argv.pop();
@@ -1248,9 +1254,10 @@ handlers.set = function (client, argv)
 		fatal('expected both property to set and value');
 
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
-		keys.push([ thoth.path, argv[0], 'info.json' ].join('/'));
+		argToInfo(client, argv[0], function (path) {
+			setProp(client, [ path ], prop, val);
+		});
 
-		setProp(client, keys, prop, val);
 		return;
 	}
 
@@ -1278,9 +1285,10 @@ handlers.unset = function (client, argv)
 		fatal('expected a property to unset');
 
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
-		keys.push([ thoth.path, argv[0], 'info.json' ].join('/'));
+		argToInfo(client, argv[0], function (path) {
+			unsetProp(client, [ path ], prop, val);
+		});
 
-		unsetProp(client, keys, prop);
 		return;
 	}
 
