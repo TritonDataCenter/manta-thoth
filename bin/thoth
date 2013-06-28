@@ -28,7 +28,7 @@ var thoth = {
 		    usage: 'print information about the specified dump(s)' },
 		{ token: 'ls', params: '[[dump]]',
 		    usage: 'list dumps matching the specification' },
-		{ token: 'object', params: '[dump]',
+		{ token: 'object', params: '[dump]', disconnected: true,
 		    usage: 'print object name for specified dump(s)' },
 		{ token: 'report', params: '[dump] [agg]',
 		    usage: 'report on dumps matching the specification' },
@@ -1174,23 +1174,10 @@ handlers.info = function (client, argv)
 
 handlers.object = function (client, argv)
 {
-	var output = function (out) {
-		var dumps = JSON.parse(out), i;
-
-		if (!(dumps instanceof Array))
-			dumps = [ dumps ];
-
-		for (i = 0; i < dumps.length; i++)
-			console.log(dumps[i].dump);
-
+	openDump(argv[0], function (file) {
+		console.log(file.digest);
 		process.exit(0);
-	};
-
-	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
-		infoGet(client, argv[0], output);
-	} else {
-		jobFromSpec(client, argv, { aggregate: false }, output);
-	}
+	});
 }
 
 handlers.report = function (client, argv)
@@ -1307,12 +1294,10 @@ handlers.unset = function (client, argv)
 	});
 }
 
-var main = function()
+var connect = function()
 {
-	var opts = {};
-
+	var i, opts = {};
 	var mvars = [ 'MANTA_URL', 'MANTA_USER', 'MANTA_KEY_ID' ];
-	var i, argv = process.argv;
 
 	for (i = 0; i < mvars.length; i++) {
 		if (!process.env[mvars[i]]) {
@@ -1328,7 +1313,13 @@ var main = function()
 		serializers: mod_restify.bunyan.serializers
 	});
 
-	var client = mod_manta.createBinClient(opts);
+	return (mod_manta.createBinClient(opts));
+}
+
+var main = function()
+{
+	var i, argv = process.argv;
+	var client = undefined;
 
 	if (argv.length < 3)
 		usage('expected command');
@@ -1338,6 +1329,10 @@ var main = function()
 			continue;
 
 		argv = argv.slice(3, argv.length);
+
+		if (!thoth.cmds[i].disconnected)
+			client = connect();
+
 		handlers[thoth.cmds[i].token].call(this, client, argv);
 		break;
 	}
