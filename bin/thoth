@@ -50,13 +50,13 @@ var warn = function (msg)
 	console.error('thoth: ' + msg);
 }
 
-var fatal = function (msg)
+var fatal = function (msg, code)
 {
 	var i, c = mod_path.basename(process.argv[1]);
 
 	console.error(c + ': ' + msg);
 
-	process.exit(1);
+	process.exit(code ? code : 1);
 };
 
 var usage = function (msg)
@@ -820,7 +820,7 @@ processCore = function (client, stat, base, dump, cb)
 		psargs: dumpline('pr_psargs'),
 		platform: dumpfield('version'),
 		node: dumpfield('nodename'),
-		time: { val: echo((stat.ctime.valueOf() / 1000) + '') }
+		time: { val: echo((stat.mtime.valueOf() / 1000) + '') }
 	};
 
 	var cmd = 'echo { > ' + json + '; ';
@@ -1031,7 +1031,7 @@ var putCrash = function (client, file, stat, base, cb)
 	});
 }
 
-var openDump = function (name, cb)
+var openDump = function (name, cb, failed)
 {
 	var minsize = 8192, fd;
 	var file = { name: name };
@@ -1042,7 +1042,9 @@ var openDump = function (name, cb)
 	try {
 		fd = mod_fs.openSync(name, 'r');
 	} catch (err) {
-		fatal('couldn\'t open "' + name + '": ' + err);
+		if (!failed)
+			fatal('couldn\'t open "' + name + '": ' + err);
+		return (failed());
 	}
 
 	file.stat = mod_fs.fstatSync(fd);
@@ -1223,6 +1225,15 @@ var argToInfo = function (client, arg, cb)
 			openDump(arg, function (file) { 
 				argToInfo(client, file.digest, cb);
 				return;
+			}, function () {
+				/*
+				 * Our info doesn't exist and it doesn't
+				 * correspond to a file on the local file
+				 * system; to allow callers to differentiate
+				 * between this case and any other error, we
+				 * return with a special exit code (2).
+				 */
+				fatal(err.toString(), 2);
 			});
 			return;
 		}
