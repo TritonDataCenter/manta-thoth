@@ -1,0 +1,701 @@
+#!/usr/node/bin/node
+
+/*
+ * Copyright (c) 2013, Joyent Inc. All rights reserved.
+ */
+
+mod_amqp = require('/smartdc/node_modules/amqp');
+mod_http = require('http');
+mod_fs = require('fs');
+mod_child = require('child_process');
+mod_path = require('path');
+sys = require('util');
+
+var requestID = function ()
+{
+        return (Math.floor(Math.random() * 0xffffffff).toString(16));
+};
+
+var sysinfoID = requestID();
+var execID = requestID();
+var outstanding = 0;
+var status = {};
+var cmd = 'sdc-thoth';
+var start = new Date().valueOf();
+var exchange;
+var last;
+var config;
+var connection;
+var writable = true;
+var path = '/usr/node/bin:/opt/smartdc/thoth/node_modules/thoth/bin:' +
+    process.env.PATH;
+var socket;
+
+process.env.PATH = path;
+
+var options = {
+	dir: { option: 'd', value: '/var/tmp',
+	    usage: 'directory in which to write files' },
+	lockfile: { option: 'l', value: 'sdc-thoth.pid',
+	    usage: 'name of lock file' },
+	node: { option: 'n', value: {},
+	    usage: 'node (or comma-separated list of nodes) on which to\n' +
+	    'gather dumps (hostname or UUID)' },
+	timeout: { option: 't', value: 10,
+	    usage: 'timeout (in seconds) for node discovery' },
+	verbose: { option: 'v', value: false,
+	    usage: 'set verbosity' },
+	exclude: { option: 'x', value: false,
+	    usage: 'exclude nodes specified via -n' },
+	command: { value: '' }
+};
+
+var exit = function (code, asynchronous)
+{
+	var exiting = {};
+
+	if (!asynchronous)
+		unlockFile();
+
+	/*
+	 * Unfortunately, node's process.exit() does no flushing of output
+	 * for us.  And because we have scattered state that we don't want to
+	 * bother cleaning up to induce a proper exit, to correctly exit we
+	 * need to not actually exit until stdout is known to be writable
+	 * (indicating that it has been successfully flushed).
+	 */
+	if (writable)
+		process.exit(code);
+
+	setTimeout(function () { exit(code, true); }, 10);
+
+	if (asynchronous)
+		return;
+
+	/*
+	 * If we have been called synchronously, callers are expecting exit()
+	 * to not return.  To effect this, we throw a bogus exception and
+	 * then use an installed uncaughtException listener to catch this
+	 * sentinel and ignore it -- which allows I/O to be asynchronously
+	 * flushed and process.exit() to be ultimately called.
+	 */
+	process.addListener('uncaughtException', function (err) {
+		if (err === exiting)
+			return;
+
+		process.stderr.write(cmd + ': uncaught exception: ' +
+		    sys.inspect(err) + '\n');
+		process.exit(1);
+	});
+
+	throw (exiting);
+};
+
+process.stdout.on('drain', function () { writable = true; });
+
+var emit = function (str)
+{
+	writable = process.stdout.write(str +
+	    (str[str.length - 1] != '\n' ? '\n' : ''));
+};
+
+var usage = function (msg)
+{
+	var indent = new Array(24).join(' ');
+	emit(cmd + ': ' + msg);
+	emit('Usage: ' + cmd +
+	    ' [-t|-T timeout] [-g|-p file] [-d dir] [-n node[,node,..]]\n' +
+	    '                      [-cjv] [cmd]\n');
+
+	for (opt in options) {
+		var option = options[opt], usage;
+
+		if (!option.usage)
+			continue;
+
+		usage = option.usage.split('\n').join('\n' + indent);
+		emit('  -' + option.option + ', --' + opt +
+		    new Array(16 - opt.length).join(' ') + usage);
+	}
+
+	exit(1);
+};
+
+var warn = function (msg)
+{
+	emit(cmd + ': warning: ' + msg);
+};
+
+var output = function (msg)
+{
+	emit(cmd + ': ' + msg);
+};
+
+var fatal = function (msg)
+{
+	emit(cmd + ': ' + msg);
+	exit(1);
+};
+
+var parseOptions = function ()
+{
+	var i, j, k, opt;
+
+	var optusage = function (o, msg) { usage('\'' + o + '\' ' + msg); };
+	var optcheck = function (o, found) {
+		if (!found)
+			optusage(o, 'is not a valid option');
+
+		if (found.present)
+			optusage(o, 'is present more than once');
+
+		found.present = true;
+	};
+
+	for (i = 2; i < process.argv.length; i++) {
+		var arg = process.argv[i];
+		var found = undefined, o;
+
+		if (arg.indexOf('-') != 0) {
+			options.command.value = process.argv.slice(i).join(' ');
+			break;
+		}
+
+		if (arg.substr(0, 2) == '--') {
+			/*
+			 * This is a long-form option.
+			 */
+			o = arg.substr(2).split('=')[0];
+			arg = arg.split('=')[1];
+
+			optcheck(o, found = options[o]);
+
+			if (!arg) {
+				if (typeof (found.value) != 'boolean')
+					optusage(o, 'requires an argument');
+
+				found.value = true;
+				continue;
+			}
+		} else {
+			for (j = 1; j < arg.length; j++) {
+				o = arg.charAt(j);
+
+				for (opt in options) {
+					if (options[opt].option == o ||
+					    options[opt].alias == o) {
+						found = options[opt];
+						break;
+					}
+				}
+
+				optcheck(o, found);
+
+				if (typeof (found.value) == 'boolean') {
+					found.value = true;
+					continue;
+				}
+
+				break;
+			}
+
+			if (j == arg.length)
+				continue;
+
+			if (j != arg.length - 1 || i == process.argv.length - 1)
+				optusage(o, 'requires an argument');
+
+			arg = process.argv[++i];
+		}
+
+		if (typeof (found.value) == 'boolean') {
+			if (arg == 'true') {
+				found.value = true;
+			} else if (arg == 'false') {
+				found.value = false;
+			} else {
+				optusage(o, 'must be \'true\' or \'false\'');
+			}
+
+			continue;
+		}
+
+		if (typeof (found.value) == 'string') {
+			found.value = arg;
+			continue;
+		}
+
+		if (typeof (found.value) == 'object') {
+			var vals = arg.split(',');
+
+			found.items = vals.length;
+			for (k = 0; k < vals.length; k++)
+				found.value[vals[k]] = true;
+			continue;
+		}
+
+		found.value = parseInt(arg, 10);
+
+		if (found.value + '' != arg)
+			optusage(o, 'requires an integer argument');
+	}
+};
+
+var verbose = function (msg)
+{
+	if (options.verbose.value)
+		emit(cmd + ': ' + msg);
+};
+
+var warn = function (msg)
+{
+	emit(cmd + ': ' + msg);
+};
+
+var host = function (which)
+{
+	return (status[which].sysinfo.Hostname);
+};
+
+var current = function (which)
+{
+	return (mod_path.basename(status[which].dump) + ' from ' + host(which));
+};
+
+var failed = function (which, where, stdout, stderr)
+{
+	var failure = { failed: true, dump: status[which].dump, where: where };
+
+	if (arguments.length > 2) {
+		warn(where + ' of ' + current(which) + ' failed');
+		warn(where + ' stdout: >>>\n' + stdout);
+		warn('<<< ' + where + ' stdout');
+		warn(where + ' stderr: >>>\n' + stderr);
+		warn('<<< ' + where + ' stderr');
+	}
+
+	status[which].done.push(failure);
+	status[which].dump = undefined;
+};
+
+var succeeded = function (which)
+{
+	var time = new Date().valueOf() - status[which].start;
+	var success = { dump: status[which].dump, time: time };
+
+	output('upload of ' + current(which) + ' completed in ' + hms(time));
+
+	status[which].done.push(success);
+	status[which].dump = undefined;
+};
+
+var exists = function (which)
+{
+	var done = { dump: status[which].dump, hash: status[which].hash };
+	status[which].done.push(done);
+	status[which].dump = undefined;
+};
+
+var hms = function (ms)
+{
+	var seconds = Math.floor(ms / 1000);
+
+	return (Math.floor((seconds / 3600)) + 'h' +
+	    Math.floor(((seconds % 3600) / 60)) + 'm' +
+	    (seconds % 60) + 's');
+};
+
+var summarize = function ()
+{
+	var which;
+	var code = 0;
+
+	output('=== Completed ===');
+
+	for (which in status) {
+		var i, done = status[which].done;
+
+		for (i = 0; i < done.length; i++) {
+			output(host(which) + ': ' +
+			    mod_path.basename(done[i].dump) + ': ' +
+			    (done[i].failed ?
+			    ('failed (' + done[i].where + ')') :
+			    (done[i].time ? 
+			    ('succeeded in ' + hms(done[i].time)) :
+			    'already uploaded')));
+
+			if (done[i].failed)
+				code = 1;
+		}
+	}
+
+	output('total run time ' + hms(new Date().valueOf() - start));
+
+	exit(code);
+};
+
+var upload = function (which, filename)
+{
+	var up = mod_child.spawn('thoth', [ 'upload', filename ]);
+	var dir = options.dir.value + '/thoth.' + execID;
+	var cmd = 'set -o xtrace ;';
+	cmd += 'mkdir ' + dir + '; cd ' + dir + ' ;';
+	cmd += 'gunzip -c ' + filename + ' | tar xvf - ;'
+	cmd += 'thoth upload * ; status=$? ; ';
+	cmd += 'cd / ; rm ' + filename + '; rm -rf ' + dir + '; '; 
+	cmd += 'exit $status';
+
+	output('staging upload of ' + current(which) + ' complete');
+	output('uploading ' + mod_path.basename(status[which].dump) +
+	    ' as ' + status[which].hash);
+
+	var child = mod_child.exec(cmd, function (error, stdout, stderr) {
+		if (error) {
+			failed(which, 'upload', stdout, stderr);
+		} else {
+			output('upload of ' + current(which) + ' complete');
+			succeeded(which);
+		}
+
+		check(which);
+	});
+}
+
+var retrieve = function (which)
+{
+	/*
+	 * In order to preserve the creation time, we create a tar ball.
+	 */
+	var dump = status[which].dump;
+	var tarball = '/var/tmp/thoth.' + execID + '.tar';
+	var cmd = 'cd ' + mod_path.dirname(dump) + ' ; ' +
+	    'tar cvf ' + tarball + ' ' + mod_path.basename(dump) + '; ' +
+	    'gzip ' + tarball + '; ';
+
+	cmd += 'curl -fX PUT --data-binary @' + tarball + '.gz http://' +
+	    config.admin_ip + ':' + socket + '/' + execID + '/' + which + '; ';
+	cmd += 'status=$? ; rm ' + tarball + '.gz ; exit $status';
+
+	execute(which, cmd, function (results) {
+		status[which].uploaded = new Date().valueOf();
+	});
+}
+
+var check = function (which)
+{
+	if (!status[which].dumps || status[which].dumps.length == 0)
+		return;
+
+	var dump = status[which].dumps[0].split(' ');
+
+	status[which].uploaded = 0;
+	status[which].dump = dump[0];
+	status[which].hash = dump[1];
+	status[which].start = new Date().valueOf();
+	status[which].dumps.shift();
+
+	output('checking ' + current(which));
+
+	var child = mod_child.exec('thoth info ' + dump[1],
+	    function (error, stdout, stderr) {
+		if (error) {
+			if (error.code == 2) {
+				retrieve(which);
+				return;
+			}
+			
+			failed(which, 'info', stdout, stderr);
+		} else {
+			output(current(which) + ' is ' + dump[1]);
+			exists(which);
+		}
+
+		check(which);
+	});
+}
+
+var discover = function (which)
+{
+	var node = options.node.value;
+	var exclude = options.exclude.value;
+	var m = status[which].sysinfo;
+	var cmd = 'for d in /zones/*/cores/core.*; do ' +
+	    'echo $d `thoth object $d` ; done';
+
+	var cmd = 'for d in /zones/global/cores/core.*; do ' +
+	    'echo $d `thoth object $d` ; done';
+
+	if (options.node.present) {
+		if (!exclude && !node[m.Hostname] && !node[m.UUID])
+			return;
+
+		if (exclude && (node[m.Hostname] || node[m.UUID]))
+			return;
+	}
+
+	status[which].discovery = true;
+	status[which].done = [];
+
+	output('discovering dumps on ' + host(which));
+
+	execute(which, cmd, function (results) {
+		status[which].discovery = false;
+
+		if (results.stdout.length > 0) {
+			status[which].dumps = results.stdout.split('\n');
+
+			/*
+			 * Pop off the empty string from the trailing newline.
+			 */
+			status[which].dumps.pop();	
+		}
+
+		if (results.stderr.length > 0)
+			failed(which, 'discovery');
+
+		check(which);
+	});
+}
+
+var execute = function (which, command, cb)
+{
+	var shell = '#!/bin/bash\n\nexport PATH=/usr/node/bin:' +
+	    '/opt/smartdc/thoth/node_modules/thoth/bin:' +
+	    process.env.PATH + '\n\n';
+
+	if (status[which].callback) {
+		fatal('attempted to execute on ' + which +
+		    ' with command outstanding');
+	}
+
+	status[which].callback = cb;
+	outstanding++;
+	exchange.publish('ur.execute.' + which + '.' + execID,
+	    { type: 'script', script: shell + command,
+	    args: [], env: {} });
+}
+
+var onReply = function (m, headers, deliveryInfo)
+{
+	var key = deliveryInfo.routingKey.split('.');
+
+	verbose('received: ' + sys.inspect(m, false, null));
+
+	if (key[3] == sysinfoID || key[1] === 'startup') {
+		status[key[2]] = { sysinfo: m };
+		discover(key[2]);
+		return;
+	}
+
+	if (key[3] == execID) {
+		var callback = status[key[2]].callback;
+
+		status[key[2]].result = m;
+		status[key[2]].callback = undefined;
+
+		callback(m);
+		outstanding--;
+		return;
+	}
+};
+
+var onReady = function ()
+{
+	exchange = connection.exchange('amq.topic', { type: 'topic' });
+	var queue = connection.queue('ur.oneachnode.' + Math.random());
+
+	queue.addListener('open', function () {
+		/*
+		 * We want to bind the routing key to our queue that will
+		 * allow us to receive all execute-reply messages.
+		 */
+		queue.bind('amq.topic', 'ur.execute-reply.*.*');
+		queue.bind('amq.topic', 'ur.startup.*');
+
+		queue.subscribeJSON(onReply);
+
+		verbose('broadcasting sysinfo request to ' + sysinfoID);
+
+		/*
+		 * Send out the sysinfo broadcast.
+		 */
+		exchange.publish('ur.broadcast.sysinfo.' + sysinfoID, {});
+	});
+};
+
+/*
+ * To enable file transfer between the head-node and one or more compute nodes,
+ * we hang out the shingle for HTTP PUTs.  
+ * We will only accept a PUT if it is to the
+ * request ID we select for execution, and will only store the files in the
+ * specified directory, with each file named with the UUID of the compute node
+ * from which the file was retrieved.
+ */
+var enableHTTP = function ()
+{
+	var local, size, pump, method;
+	var keepalive = function () { last = new Date().valueOf(); };
+
+	var put = function (req, res, url) {
+		var filename = options.dir.value + '/' + url[2];
+		var output;
+
+		verbose('uploading to ' + filename);
+
+		output = mod_fs.createWriteStream(filename);
+
+		output.addListener('close', function () {
+			outstanding--;
+			verbose('upload to ' + filename + ' completed');
+			upload(url[2], filename);
+		});
+
+		req.addListener('data', keepalive);
+		req.addListener('end', function () {
+			res.writeHead(200);
+			res.end();
+			output.destroySoon();
+		});
+
+		sys.pump(req, output);
+	};
+
+	var server = mod_http.createServer(function (req, res) {
+		verbose('received ' + req.method + ' of ' + req.url +
+		    ' from ' + req.connection.remoteAddress);
+
+		if (req.method != method) {
+			res.writeHead(405, 'only ' + method + ' supported');
+			res.end();
+			return;
+		}
+
+		var url = req.url.split('/');
+
+		if (url.length != 3) {
+			res.writeHead(404, 'expected UUID');
+			res.end();
+			return;
+		}
+
+		if (url[1] != execID || !status[url[2]]) {
+			res.writeHead(404, 'invalid request ID');
+			res.end();
+			return;
+		}
+
+		keepalive();
+		outstanding++;
+
+		pump(req, res, url);
+	});
+
+	/*
+	 * Look for an available socket on which to listen.
+	 */
+	for (socket = 32411; socket < 33000; socket++) {
+		try {
+			server.listen(socket);
+			break;
+		} catch (err) {
+			continue;
+		}
+	}
+
+	pump = put;
+	method = 'PUT';
+};
+
+var unlockFile = function ()
+{
+	var path = options.dir.value + '/' + options.lockfile.value;
+
+	try {
+		mod_fs.unlinkSync(path);
+	} catch (err) {};
+};
+
+var lockFile = function ()
+{
+	var path = options.dir.value + '/' + options.lockfile.value;
+	var fd, locksize = 32;
+
+	try {
+		fd = mod_fs.openSync(path, 'wx');
+	} catch (err) {
+		fd = mod_fs.openSync(path, 'r');
+
+		var buf = new Buffer(locksize);
+		var nbytes = mod_fs.readSync(fd, buf, 0, locksize, 0);
+		mod_fs.closeSync(fd);
+
+		var pid = buf.toString('utf8', 0, nbytes);
+
+		output(path + ' exists; ' + 'already running as pid ' + pid);
+
+		/*
+		 * Let's see if that pid exists; if it doesn't we'll blow away
+		 * the lock file and drive on.
+		 */
+		try {
+			mod_fs.statSync('/proc/' + pid);
+		} catch (err) {
+			output('pid ' + pid +
+			    ' no longer exists; removing lock file');
+			unlockFile();
+			lockFile();
+			return;
+		}
+
+		process.exit(0);
+	}
+
+	mod_fs.writeSync(fd, process.pid + '');
+	mod_fs.closeSync(fd);
+};
+
+mod_child.execFile('/bin/bash',
+    [ '/lib/sdc/config.sh', '-json' ], function (error, stdout, stderr) {
+	if (error) {
+		warn('couldn\'t read config: ' + stderr.toString());
+		exit(1);
+	}
+
+	config = JSON.parse(stdout.toString());
+
+	parseOptions();
+	lockFile();
+
+	enableHTTP();
+
+	var r = config.rabbitmq.split(':');
+	var creds = { login: r[0], password: r[1], host: r[2], port: r[3] };
+
+	connection = mod_amqp.createConnection(creds);
+	connection.addListener('ready', onReady);
+
+	var id = setInterval(function () {
+		var now = new Date().valueOf();
+		var timeout = options.timeout.value * 1000;
+		var which;
+
+		if (outstanding || now - start < timeout)
+			return;
+
+		for (which in status) {
+			var dumps = status[which].dumps;
+
+			if (status[which].discovery)
+				return;
+
+			if (dumps && dumps.length > 1)
+				return;
+
+			if (status[which].dump)
+				return;
+		}
+
+		clearTimeout(id);
+		summarize();
+	}, 1000);
+});
