@@ -1195,12 +1195,20 @@ var setProp = function (client, keys, prop, val)
 	var tmp = '/tmp/tmp.json';
 	var json = '/tmp/new.json';
 
-	var cmd = 'echo \'{ \"properties\": { \"' +
-	    prop + '\": \"' + val + '\"} }\' > ' + tmp + '; ';
+	var cmd = 'cat > ' + tmp + ' <<EOF\n';
+
+	cmd += '{ "properties": { "' + prop + '": ';
+
+	if (val instanceof Object)
+		cmd += JSON.stringify(val);
+	else {
+		cmd += '\"' + val + '\"';
+	}
+
+	cmd += '} }\nEOF\n';
 
 	cmd += 'cat $MANTA_INPUT_FILE ' + tmp + ' | json --deep-merge > ' +
 	    json + ';';
-
 	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT'; 
 
 	jobOneKey(client, keys, cmd, function () { process.exit(0) });
@@ -1244,19 +1252,48 @@ var argToInfo = function (client, arg, cb)
 
 handlers.set = function (client, argv)
 {
-	var val = argv.pop();
-	var prop = argv.pop();
-	var keys = [];
+	var i, val, prop, keys;
 
-	if (!val || !prop)
-		fatal('expected both property to set and value');
+	function parseVal(val) {
+		if (!val) {
+			warn('value for \'' + prop + '\' not set ' +
+			    'on command line; reading JSON from stdin');
 
-	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
+			var maxval = 64 * 1024;
+			var buf = new Buffer(maxval);
+			var nbytes = mod_fs.readSync(0, buf, 0, maxval, 0);
+
+			val = JSON.parse(buf.toString('utf8', 0, nbytes));
+		} else {
+			try {
+				val = JSON.parse(val);
+			} catch (err) {}
+		}
+
+		return (val);
+	}
+
+	if (argv[0].indexOf('=') == -1) {
 		argToInfo(client, argv[0], function (path) {
+			if (argv.length < 2)
+				fatal('expected property to set');
+
+			prop = argv[1];
+
+			val = parseVal(argv.length >= 3 ? argv[2] : undefined);
 			setProp(client, [ path ], prop, val);
 		});
 
 		return;
+	}
+
+	for (i = 0; i < argv.length; i++) {
+		if (argv[i].indexOf('=') != -1)
+			continue;
+
+		prop = argv[i];
+		val = parseVal(i < argv.length - 1 ? argv[i + 1] : undefined);
+		break;
 	}
 
 	/*
