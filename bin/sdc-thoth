@@ -315,6 +315,11 @@ var summarize = function ()
 	for (which in status) {
 		var i, done = status[which].done;
 
+		if (done.length == 0) {
+			output(host(which) + ': nothing to do');
+			continue;
+		}
+
 		for (i = 0; i < done.length; i++) {
 			output(host(which) + ': ' +
 			    mod_path.basename(done[i].dump) + ': ' +
@@ -367,13 +372,18 @@ var setprop = function (which)
 
 var upload = function (which, filename)
 {
-	var dir = options.dir.value + '/thoth.' + execID;
-	var cmd = 'set -o xtrace ;';
-	cmd += 'mkdir ' + dir + '; cd ' + dir + ' ;';
-	cmd += 'gunzip -c ' + filename + ' | tar xvf - ;'
-	cmd += 'thoth upload * ; status=$? ; ';
-	cmd += 'cd / ; rm ' + filename + '; rm -rf ' + dir + '; '; 
-	cmd += 'exit $status';
+	var dir = options.dir.value + '/thoth.' + execID + '.' + which, cmd;
+
+	if (status[which].crash) {
+		cmd = 'thoth upload ' + filename;
+	} else {
+		cmd = 'set -o xtrace ;';
+		cmd += 'mkdir ' + dir + '; cd ' + dir + ' ;';
+		cmd += 'gunzip -c ' + filename + ' | tar xvf - ;'
+		cmd += 'thoth upload * ; status=$? ; ';
+		cmd += 'cd / ; rm ' + filename + '; rm -rf ' + dir + '; '; 
+		cmd += 'exit $status';
+	}
 
 	output('staging upload of ' + current(which) + ' complete');
 	output('uploading ' + mod_path.basename(status[which].dump) +
@@ -394,18 +404,34 @@ var upload = function (which, filename)
 
 var retrieve = function (which)
 {
-	/*
-	 * In order to preserve the creation time, we create a tar ball.
-	 */
-	var dump = status[which].dump;
-	var tarball = '/var/tmp/thoth.' + execID + '.tar';
-	var cmd = 'cd ' + mod_path.dirname(dump) + ' ; ' +
-	    'tar cvf ' + tarball + ' ' + mod_path.basename(dump) + '; ' +
-	    'gzip ' + tarball + '; ';
+	var dump = status[which].dump, cmd = '';
+	var core = false, file;
 
-	cmd += 'curl -fX PUT --data-binary @' + tarball + '.gz http://' +
-	    config.admin_ip + ':' + socket + '/' + execID + '/' + which + '; ';
-	cmd += 'status=$? ; rm ' + tarball + '.gz ; exit $status';
+	if (!status[which].crash) {
+		/*
+		 * In order to preserve the creation time for core dumps, we
+		 * create a tar ball (crash dumps have the time embedded in
+		 * them).
+		 */
+		var tarball = '/var/tmp/thoth.' + execID + '.tar';
+		core = true;
+
+		cmd += 'cd ' + mod_path.dirname(dump) + ' ; ' +
+		    'tar cvf ' + tarball + ' ' + mod_path.basename(dump) +
+		    '; ' + 'gzip ' + tarball + '; ';
+
+		file = tarball + '.gz';
+	} else {
+		file = dump;
+	}
+
+	cmd += 'curl -fX PUT -T ' + file + ' http://' + config.admin_ip + ':' +
+	    socket + '/' + execID + '/' + which + '; status=$? ; ';
+
+	if (!status[which].crash)
+		cmd += 'rm ' + file + '; ';
+
+	cmd += 'exit $status';
 
 	execute(which, cmd, function (results) {
 		status[which].uploaded = new Date().valueOf();
@@ -423,6 +449,8 @@ var check = function (which)
 	status[which].dump = dump[0];
 	status[which].hash = dump[1];
 	status[which].start = new Date().valueOf();
+	status[which].crash =
+	    mod_path.basename(dump[0]).indexOf('vmdump.') == 0;
 	status[which].dumps.shift();
 
 	output('checking ' + current(which));
@@ -450,11 +478,11 @@ var discover = function (which)
 	var node = options.node.value;
 	var exclude = options.exclude.value;
 	var m = status[which].sysinfo;
-	var cmd = 'for d in /zones/*/cores/core.*; do ' +
-	    'echo $d `thoth object $d` ; done';
+	var ls = 'ls -1 /zones/*/cores/core.* /var/crash/volatile/vmdump.*';
 
-	var cmd = 'for d in /zones/global/cores/core.*; do ' +
-	    'echo $d `thoth object $d` ; done';
+	var cmd = 'for d in `' + ls + ' 2> /dev/null`; do ' +
+	    'hash=`thoth object $d`; ' +
+	    'if [[ "$?" -eq 0 ]]; then echo $d $hash ; fi ; done';
 
 	if (options.node.present) {
 		if (!exclude && !node[m.Hostname] && !node[m.UUID])
@@ -480,9 +508,6 @@ var discover = function (which)
 			 */
 			status[which].dumps.pop();	
 		}
-
-		if (results.stderr.length > 0)
-			failed(which, 'discovery');
 
 		check(which);
 	});
