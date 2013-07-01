@@ -334,9 +334,39 @@ var summarize = function ()
 	exit(code);
 };
 
+var setprop = function (which)
+{
+	output('setting sysinfo property');
+
+	var set = mod_child.spawn('thoth',
+	    [ 'set', status[which].hash, 'sysinfo' ]);
+
+	var stdout = '';
+	var stderr = '';
+
+	set.on('close', function (code) {
+		if (code != 0) {
+			failed(which, 'set', stdout, stderr);
+		} else {
+			succeeded(which);
+		}
+
+		check(which);
+	});
+
+	set.stdout.on('data', function (data) {
+		stdout += data;
+	});
+
+	set.stderr.on('data', function (data) {
+		stderr += data;
+	});
+
+	set.stdin.write(JSON.stringify(status[which].sysinfo));
+};
+
 var upload = function (which, filename)
 {
-	var up = mod_child.spawn('thoth', [ 'upload', filename ]);
 	var dir = options.dir.value + '/thoth.' + execID;
 	var cmd = 'set -o xtrace ;';
 	cmd += 'mkdir ' + dir + '; cd ' + dir + ' ;';
@@ -354,7 +384,8 @@ var upload = function (which, filename)
 			failed(which, 'upload', stdout, stderr);
 		} else {
 			output('upload of ' + current(which) + ' complete');
-			succeeded(which);
+			setprop(which);
+			return;
 		}
 
 		check(which);
@@ -475,6 +506,30 @@ var execute = function (which, command, cb)
 	    args: [], env: {} });
 }
 
+/*
+ * sysinfo has quite a few properties with spaces in them.  This makes for
+ * a nightmare when trying to specify properties via thoth, so turn all
+ * spaces into underscores.
+ */
+var canonicalize = function (obj)
+{
+	var field, child;
+
+	if (!(obj instanceof Object))
+		return;
+
+	for (field in obj) {
+		child = obj[field];
+
+		if (field.indexOf(' ') != -1) {
+			obj[field.replace(/ /g, '_')] = obj[field];
+			delete obj[field];
+		}
+
+		canonicalize(child);
+	}
+}
+
 var onReply = function (m, headers, deliveryInfo)
 {
 	var key = deliveryInfo.routingKey.split('.');
@@ -482,6 +537,7 @@ var onReply = function (m, headers, deliveryInfo)
 	verbose('received: ' + sys.inspect(m, false, null));
 
 	if (key[3] == sysinfoID || key[1] === 'startup') {
+		canonicalize(m);
 		status[key[2]] = { sysinfo: m };
 		discover(key[2]);
 		return;
