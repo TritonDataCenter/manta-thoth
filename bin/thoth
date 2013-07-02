@@ -20,6 +20,7 @@ var handlers = {};
 
 var thoth = {
 	path: '/' + process.env.MANTA_USER + '/stor/thoth',
+	analyzers: 'analyzers',
 	verbose: true,
 	cmds: [
 		{ token: 'upload', params: '[file]',
@@ -35,7 +36,13 @@ var thoth = {
 		{ token: 'set', params: '[dump] [prop] [val]',
 		    usage: 'set prop to val for the specified dump(s)' },
 		{ token: 'unset', params: '[dump] [prop]',
-		    usage: 'unset prop for the specified dump(s)' }
+		    usage: 'unset prop for the specified dump(s)' },
+		{ token: 'analyze', params: '[dump] [analyzer]',
+		    usage: 'analyze the specified dump(s)' },
+		{ token: 'analyzer', params: '[analyzer]',
+		    usage: 'add the named analyzer from stdin' },
+		{ token: 'analyzers',
+		    usage: 'list analyzers' }
 	]
 };
 
@@ -67,7 +74,8 @@ var usage = function (msg)
         console.error('Usage: ' + c + ' [command] [params]\n');
 
 	for (i = 0; i < thoth.cmds.length; i++) {
-		var cmd = thoth.cmds[i].token + ' ' + thoth.cmds[i].params;
+		var cmd = thoth.cmds[i].token + (thoth.cmds[i].params ?
+		    (' ' + thoth.cmds[i].params) : '');
 
 		console.error(sprintf('  %-26s %s',
 		    cmd, thoth.cmds[i].usage));
@@ -659,14 +667,12 @@ jobOutput = function (client, cb)
 	});
 }
 
-jobOneKey = function (client, key, cmd, cb, opts)
+jobOneKey = function (client, key, cmd, cb, preflight)
 {
 	var job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
 
-	if (opts) {
-		for (var opt in opts)
-			job.phases[0][opt] = opts[opt];
-	}
+	if (preflight)
+		preflight(job);
 
 	client.createJob(job, function (err, id) {
 		checkError(err);
@@ -694,7 +700,7 @@ jobAllKeys = function (client, job, cb)
 	 */
 	var cmd = 'mls ' + thoth.path + ' | awk \'{ printf("' +
 	    thoth.path + '/%s/info.json\\n", $1) }\' | xargs mcat';
-	    
+
 	job.phases.unshift({ exec: cmd, type: 'reduce' });
 
 	client.createJob(job, function (err, id) {
@@ -871,7 +877,7 @@ var uncompressCore = function (client, stat, base, dump, cb)
 	status('creating job to uncompress ' + mod_path.basename(base));
 	jobOneKey(client, dump + '.gz', cmd,
 	    function () { processCore(client, stat, base, dump, cb); },
-	    { disk: 128 });
+	    function (job) { job.phases[0].disk = 128; });
 };
 
 var progressBar = function (dump, stream, stat)
@@ -1003,7 +1009,7 @@ var uncompressCrash = function (client, stat, base, dump, cb)
 	status('creating job to savecore ' + mod_path.basename(base));
 	jobOneKey(client, dump, cmd,
 	    function () { processCrash(client, stat, base, vmcore, cb); },
-	    { disk: 512 });
+	    function (job) { job.phases[0].disk = 128; });
 };
 
 var putCrash = function (client, file, stat, base, cb)
@@ -1250,9 +1256,34 @@ var argToInfo = function (client, arg, cb)
 	});
 }
 
+var runAnalyzer = function (client, keys, analyzer)
+{
+	var cmd = 'export THOTH_DUMP=$MANTA_INPUT_FILE; ';
+	cmd += 'export THOTH_NAME=`basename $(dirname $MANTA_INPUT_FILE)`; ';
+	cmd += 'if ( file $MANTA_INPUT_FILE | grep "core file" > /dev/null );'
+	cmd += 'then export THOTH_TYPE=core ; else THOTH_TYPE=crash ; fi ;';
+
+	cmd += 'bash < /assets/' + analyzer + ' > /tmp/out ;';
+
+	cmd += 'if [ -s /tmp/out ]; then echo "=== $THOTH_NAME ===" ;'
+	cmd += 'echo ; cat /tmp/out ; echo ; fi';
+
+	var preflight = function (job) {
+		job.phases[0].assets = [ analyzer ];
+		job.phases.push({ exec: 'cat', type: 'reduce' });
+	};
+
+	var done = function (output) {
+		console.log(output);
+		process.exit(0);
+	}
+
+	jobOneKey(client, keys, cmd, jobOutput(client, done), preflight);
+}
+
 handlers.set = function (client, argv)
 {
-	var i, val, prop, keys;
+	var i, val, prop, keys = [];
 
 	function parseVal(val) {
 		if (!val) {
@@ -1293,8 +1324,14 @@ handlers.set = function (client, argv)
 
 		prop = argv[i];
 		val = parseVal(i < argv.length - 1 ? argv[i + 1] : undefined);
+
 		break;
 	}
+
+	argv.pop();
+
+	if (i < argv.length)
+		argv.pop();
 
 	/*
 	 * This is a little janky to do this in two passes.
@@ -1302,7 +1339,7 @@ handlers.set = function (client, argv)
 	argv.push('name');
 
 	jobFromSpec(client, argv, { aggregate: true }, function (output) {
-		dumps = JSON.parse(output);
+		var dumps = JSON.parse(output);
 
 		for (name in dumps)
 			keys.push([ name, 'info.json' ].join('/'));
@@ -1340,7 +1377,103 @@ handlers.unset = function (client, argv)
 
 		unsetProp(client, keys, prop);
 	});
+};
+
+handlers.analyzer = function (client, argv)
+{
+	var remove = true;
+	var analyzer, msg;
+
+	if (argv.length != 1)
+		fatal('analyzers must be named');
+
+	analyzer = thoth.analyzers + '/' + argv[0];
+	msg = 'analyzer \'' + argv[0] + '\'';
+
+	warn('reading ' + msg + ' from stdin');
+
+	process.stdin.on('data', function () { remove = false; });
+
+	client.mkdirp(thoth.analyzers, function (err) {
+		checkError(err);
+
+		client.put(analyzer, process.stdin, function (err) {
+			checkError(err);
+
+			if (remove) {
+				warn('removing ' + msg);
+				client.unlink(analyzer, function (err) {
+					checkError(err);
+					warn('removed ' + msg);
+					process.exit(0);
+				});
+			} else {
+				warn('added ' + msg);
+				process.exit(0);
+			}
+		});
+	});
 }
+
+handlers.analyzers = function (client, argv)
+{
+	var analyzers = [], i;
+
+	client.ls(thoth.analyzers, function (err, res) {
+		checkError(err);
+
+		res.on('object', function (obj) {
+			analyzers.push(thoth.analyzers + '/' + obj.name);
+		});
+
+		res.on('error', function (err) {
+			if (err.code == 'ResourceNotFound')
+				process.exit(0);
+		});
+	
+		res.on('end', function () {
+			analyzers.sort();
+
+			for (i = 0; i < analyzers.length; i++)
+				console.log(analyzers[i]);
+
+			process.exit(0);
+		});
+	});
+};
+
+handlers.analyze = function (client, argv)
+{
+	if (argv.length < 2)
+		fatal('expected both dump specification and analyzer');
+
+	var analyzer = argv.pop();
+
+	if (analyzer.indexOf('/') != 0)
+		analyzer = thoth.analyzers + '/' + analyzer;
+
+	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
+		infoGet(client, argv[0], function (output) {
+			var info = JSON.parse(output);
+
+			runAnalyzer(client, [ info.dump ], analyzer);
+		});
+
+		return;
+	}
+
+	argv.push('dump');
+
+	jobFromSpec(client, argv, { aggregate: true }, function (output) {
+		var all = JSON.parse(output);
+		var dumps = [];
+
+		for (dump in all)
+			dumps.push(dump);
+	
+		runAnalyzer(client, dumps, analyzer);
+	});
+};
 
 var connect = function()
 {
@@ -1371,6 +1504,8 @@ var main = function()
 
 	if (argv.length < 3)
 		usage('expected command');
+
+	thoth.analyzers = thoth.path + '/' + thoth.analyzers;
 
 	for (i = 0; i < thoth.cmds.length; i++) {
 		if (argv[2] != thoth.cmds[i].token)
