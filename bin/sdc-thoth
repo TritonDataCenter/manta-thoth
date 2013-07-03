@@ -41,12 +41,14 @@ var options = {
 	node: { option: 'n', value: {},
 	    usage: 'node (or comma-separated list of nodes) on which to\n' +
 	    'gather dumps (hostname or UUID)' },
-	timeout: { option: 't', value: 10,
-	    usage: 'timeout (in seconds) for node discovery' },
 	verbose: { option: 'v', value: false,
 	    usage: 'set verbosity' },
 	exclude: { option: 'x', value: false,
 	    usage: 'exclude nodes specified via -n' },
+	type: { option: 't', value: 'all',
+	    usage: 'type to upload (\'core\', \'crash\' or \'all\')' },
+	timeout: { option: 'T', value: 10,
+	    usage: 'timeout (in seconds) for node discovery' },
 	command: { value: '' }
 };
 
@@ -478,7 +480,21 @@ var discover = function (which)
 	var node = options.node.value;
 	var exclude = options.exclude.value;
 	var m = status[which].sysinfo;
-	var ls = 'ls -1 /zones/*/cores/core.* /var/crash/volatile/vmdump.*';
+	var type = options.type.value;
+
+	var where = {
+		core: '/zones/*/cores/core.*',
+		crash: '/var/crash/volatile/vmdump.*',
+		all: ''
+	};
+
+	for (w in where)
+		where.all += ' ' + where[w];
+
+	if (!where[type])
+		fatal('illegal value \'' + type + '\' for type');
+
+	var ls = 'ls -1 ' + where[type];
 
 	var cmd = 'for d in `' + ls + ' 2> /dev/null`; do ' +
 	    'hash=`thoth object $d`; ' +
