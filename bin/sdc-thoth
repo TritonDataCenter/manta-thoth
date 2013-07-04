@@ -36,9 +36,11 @@ process.env.PATH = path;
 var options = {
 	dir: { option: 'd', value: '/var/tmp',
 	    usage: 'directory in which to write files' },
+	'dry-run': { option: 'n', value: false,
+	    usage: 'dry run; do not upload anything' },
 	lockfile: { option: 'l', value: 'sdc-thoth.pid',
 	    usage: 'name of lock file' },
-	node: { option: 'n', value: {},
+	node: { option: 'N', value: {},
 	    usage: 'node (or comma-separated list of nodes) on which to\n' +
 	    'gather dumps (hostname or UUID)' },
 	verbose: { option: 'v', value: false,
@@ -105,9 +107,7 @@ var usage = function (msg)
 {
 	var indent = new Array(24).join(' ');
 	emit(cmd + ': ' + msg);
-	emit('Usage: ' + cmd +
-	    ' [-t|-T timeout] [-g|-p file] [-d dir] [-n node[,node,..]]\n' +
-	    '                      [-cjv] [cmd]\n');
+	emit('Usage: ' + cmd + ' [options]\n\n');
 
 	for (opt in options) {
 		var option = options[opt], usage;
@@ -254,6 +254,24 @@ var warn = function (msg)
 	emit(cmd + ': ' + msg);
 };
 
+var hms = function (ms)
+{
+	var seconds = Math.floor(ms / 1000);
+
+	return (Math.floor((seconds / 3600)) + 'h' +
+	    Math.floor(((seconds % 3600) / 60)) + 'm' +
+	    (seconds % 60) + 's');
+};
+
+var humanSize = function (size)
+{
+	var mag = Math.floor(Math.log(size) / Math.log(1024));
+	var units = ['', 'K', 'M', 'G', 'T', 'P', 'E'];
+
+	return (mag < units.length ?
+	    ((size / Math.pow(1024, mag)).toFixed(2) * 1 + units[mag]) : size);
+};
+
 var host = function (which)
 {
 	return (status[which].sysinfo.Hostname);
@@ -291,6 +309,17 @@ var succeeded = function (which)
 	status[which].dump = undefined;
 };
 
+var dryran = function (which)
+{
+	var success = { dump: status[which].dump, size: status[which].size };
+
+	output('would upload ' + current(which) +
+	    ' (' + humanSize(success.size) + ')');
+
+	status[which].done.push(success);
+	status[which].dump = undefined;
+};
+
 var exists = function (which)
 {
 	var done = { dump: status[which].dump, hash: status[which].hash };
@@ -298,19 +327,10 @@ var exists = function (which)
 	status[which].dump = undefined;
 };
 
-var hms = function (ms)
-{
-	var seconds = Math.floor(ms / 1000);
-
-	return (Math.floor((seconds / 3600)) + 'h' +
-	    Math.floor(((seconds % 3600) / 60)) + 'm' +
-	    (seconds % 60) + 's');
-};
-
 var summarize = function ()
 {
 	var which;
-	var code = 0;
+	var code = 0, ttl = 0;
 
 	output('=== Completed ===');
 
@@ -329,13 +349,20 @@ var summarize = function ()
 			    ('failed (' + done[i].where + ')') :
 			    (done[i].time ? 
 			    ('succeeded in ' + hms(done[i].time)) :
-			    'already uploaded')));
+			    (done[i].size ?
+			    ('would have uploaded ' + humanSize(done[i].size)) :
+			    'already uploaded'))));
+
+			if (done[i].size)
+				ttl += done[i].size;
 
 			if (done[i].failed)
 				code = 1;
 		}
 	}
 
+	output((options['dry-run'].value ? 'would have ' : '') +
+	    'uploaded ' + humanSize(ttl)  + ' bytes');
 	output('total run time ' + hms(new Date().valueOf() - start));
 
 	exit(code);
@@ -450,6 +477,7 @@ var check = function (which)
 	status[which].uploaded = 0;
 	status[which].dump = dump[0];
 	status[which].hash = dump[1];
+	status[which].size = parseInt(dump[2], 10);
 	status[which].start = new Date().valueOf();
 	status[which].crash =
 	    mod_path.basename(dump[0]).indexOf('vmdump.') == 0;
@@ -461,10 +489,16 @@ var check = function (which)
 	    function (error, stdout, stderr) {
 		if (error) {
 			if (error.code == 2) {
+				if (options['dry-run'].value) {
+					dryran(which);
+					check(which);
+					return;
+				}
+
 				retrieve(which);
 				return;
 			}
-			
+
 			failed(which, 'info', stdout, stderr);
 		} else {
 			output(current(which) + ' is ' + dump[1]);
@@ -497,8 +531,9 @@ var discover = function (which)
 	var ls = 'ls -1 ' + where[type];
 
 	var cmd = 'for d in `' + ls + ' 2> /dev/null`; do ' +
+	    'size=`ls -l $d | awk \'{ print $5 }\'` ; ' +
 	    'hash=`thoth object $d`; ' +
-	    'if [[ "$?" -eq 0 ]]; then echo $d $hash ; fi ; done';
+	    'if [[ "$?" -eq 0 ]]; then echo $d $hash $size ; fi ; done';
 
 	if (options.node.present) {
 		if (!exclude && !node[m.Hostname] && !node[m.UUID])
