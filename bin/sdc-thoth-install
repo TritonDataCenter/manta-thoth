@@ -1,0 +1,269 @@
+#!/bin/bash
+
+log=/var/tmp/sdc-thoth-install.log
+exec 2>"$log" 4>&1
+
+set -o xtrace
+set -o errexit
+set -o pipefail
+
+function fatal
+{
+	echo "$(basename $0): fatal error: $*"
+	echo "$(basename $0): log in $log"
+	exit 1
+}
+
+hosts=/etc/hosts
+backup=/tmp/thoth.$$
+
+function onexit
+{
+	if [[ -f $backup ]]; then
+		cp $backup $hosts
+		rm $backup	
+	fi
+	
+	[[ $1 -ne 0 ]] || exit 0
+	fatal "error exit status $1"
+}
+
+trap 'onexit $? $LINENO' EXIT
+
+user=thoth
+base=/opt/custom/thoth
+home=$base/home/$user
+
+if [[ "$1" == "-f" ]]; then
+	force=true
+fi
+
+if ( svcs thoth 1> /dev/null 2>&1 ); then
+	if [[ $force ]]; then
+		svccfg delete -f thoth 1>&2
+	else
+		fatal "'thoth' service already exists; svccfg delete or use -f"
+	fi
+fi
+
+if ( id $user 1> /dev/null 2>&1 ); then
+	if [[ $force ]]; then
+		userdel $user 1>&2
+	else
+		fatal "user $user already exists; userdel or use -f"
+	fi
+fi
+
+if [[ -d $home ]]; then
+	if [[ $force ]]; then
+		rm -rf $home
+	else
+		fatal "directory $home already exists; rm -r or use -f"
+	fi
+fi
+
+if [[ -z $MANTA_URL ]]; then
+	server=us-east.manta.joyent.com
+
+	if ( ! ping $server 1>&2 ); then
+		MANTA_URL=https://`dig +short $server | head -1`
+		insecure="export MANTA_TLS_INSECURE=1"
+	else
+		MANTA_URL=https://$server
+		insecure=
+	fi
+	
+	export MANTA_URL
+fi
+
+[[ -n $SDC_ACCOUNT ]] || fatal "must set \$SDC_ACCOUNT"
+[[ -n $SDC_KEY_ID ]] || fatal "must set \$SDC_KEY_ID"
+
+if [[ -z $SDC_URL ]]; then
+	server=us-west-1.api.joyentcloud.com
+
+	if ( ! ping $server 1>&2 ); then
+		if ( ! grep $server $hosts > /dev/null ); then
+			ip=`dig +short $server | head -1`
+			cp $hosts $backup
+			echo "$ip $server" >> $hosts
+		fi
+
+		if ( ! ping $server 1>&2 ); then
+			fatal "could not ping $server"
+		fi
+	fi	
+
+	SDC_URL=https://$server
+	export SDC_URL
+fi
+
+if [ ! -d $base ]; then
+	#
+	# If we're installing for the first time, pull down tar ball and
+	# sdc-oneachnode to install everywhere.
+	#
+	tarball=/var/tmp/thoth.$$.tar.gz
+	staged=/tmp/thoth.$$.tar.gz
+	echo "Downloading thoth ..."
+	curl -k $MANTA_URL/thoth/public/thoth.tar.gz > $staged 2>&4
+	echo "Downloading thoth to compute nodes ..."
+	sdc-oneachnode -g $staged -d /var/tmp 1>&2
+	echo "Installing thoth on compute nodes ..."
+	sdc-oneachnode "cd / ; gzcat $tarball | tar xf - ; rm $tarball" 1>&2
+	rm $staged
+fi
+
+PATH=$base/bin:$PATH
+PATH=$base/node_modules/thoth/bin:$PATH
+PATH=$base/node_modules/thoth/node_modules/manta/bin:$PATH
+PATH=$base/node_modules/smartdc/bin:$PATH
+export PATH
+
+mkdir -p $home
+mkdir -p $home/.ssh
+
+#
+# Create our SSH key.
+#
+echo "Creating SSH key ... "
+keyfile=$home/.ssh/id_rsa
+pub=${keyfile}.pub
+ssh-keygen -t rsa -f $keyfile -N "" 1>&2
+
+#
+# Set the Manta variables
+#
+key="`sysinfo | json 'Datacenter Name'`-`sysinfo | json UUID`"
+
+if ( sdc-deletekey -n "$key" 1>&2 ); then
+	echo "Cleaning up existing key ..."
+fi
+
+echo "Adding key to $SDC_ACCOUNT ..."
+sdc-createkey -n "$key" $pub 1>&2
+
+fingerprint=`ssh-keygen -l -f $pub | awk '{print $2}' | tr -d '\n'`
+
+echo "Creating .bashrc ..."
+bashrc=$home/.bashrc
+cat > $bashrc <<EOF
+export MANTA_URL=$MANTA_URL
+export MANTA_KEY_ID=$fingerprint
+export MANTA_USER=$SDC_ACCOUNT
+$insecure
+export PATH=$PATH
+export THOTH_UUID=$key
+EOF
+ln $bashrc $home/.bash_profile
+
+crontab=$home/crontab
+postboot=$base/bin/postboot
+manifest=/opt/custom/smf/thoth.xml
+runthoth=$home/run-thoth
+
+echo Creating crontab ...
+
+cat > $crontab <<EOF
+44 * * * * bash -c $runthoth
+EOF
+
+echo Creating `basename $runthoth` script ...
+
+cat > $runthoth <<EOF
+#
+# This script is run out of a cron job.  By default, it does nothing (it
+# runs with --dry-run); this option should be removed to get sdc-thoth to
+# actually start uploading.
+#
+source ~/.bashrc
+
+log=\`date +log/%m/%d/%H/%M/sdc-thoth.out\`
+mkdir -p \$HOME/\`dirname \$log\`
+sdc-thoth --dry-run > \$log
+
+mlog=/\$MANTA_USER/stor/thoth/logs/\$THOTH_UUID/\$log
+mmkdir -p \`dirname \$mlog\`
+mput -f \$log \$mlog
+EOF
+
+chmod +x $runthoth
+
+cat > $postboot <<EOF
+#!/bin/bash
+
+set -o xtrace
+
+useradd -c "Thoth user" -s /bin/bash -d $home $user
+passwd -u $user
+cat $crontab | su thoth -c crontab
+
+#
+# We crank our window sizes to get maximum throughput on LFPs
+#
+ndd -set /dev/tcp tcp_xmit_hiwat 2097152
+ndd -set /dev/tcp tcp_recv_hiwat 2097152
+EOF
+
+chmod +x $postboot
+
+echo Creating SMF manifest ...
+
+#
+# Now create the manifest 
+#
+mkdir -p `dirname $manifest` || true
+cat > $manifest <<EOF
+<?xml version="1.0"?>
+<!DOCTYPE service_bundle SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">
+
+<service_bundle type='manifest' name='site:thoth'>
+<service
+	name='site/thoth'
+	type='service'
+	version='1'>
+
+	<create_default_instance enabled='true' />
+
+	<single_instance />
+
+	<dependency
+		name='fs-root'
+		grouping='require_all'
+		restart_on='none'
+		type='service'>
+		<service_fmri value='svc:/system/filesystem/root' />
+	</dependency>
+
+	<exec_method
+		type='method'
+		name='start'
+		exec='$postboot'
+		timeout_seconds='0'>
+	</exec_method>
+
+	<exec_method
+		type='method'
+		name='stop'
+		exec=':true'
+		timeout_seconds='0'>
+	</exec_method>
+
+	<property_group name='startd' type='framework'>
+		<propval name='duration' type='astring' value='transient' />
+	</property_group>
+
+	<stability value='Unstable' />
+</service>
+</service_bundle>
+EOF
+
+echo Importing SMF manifest ...
+svccfg import $manifest
+
+while ! chown -R $user $home ; do
+	sleep 1
+done
+
+echo "Done; edit ~/`basename $runthoth` as user $user to enable sdc-thoth"
+
