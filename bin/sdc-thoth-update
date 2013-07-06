@@ -1,0 +1,75 @@
+#!/bin/bash
+
+log=/var/tmp/sdc-thoth-update.log
+exec 2>"$log" 4>&1
+
+set -o xtrace
+set -o errexit
+set -o pipefail
+
+function fatal
+{
+	echo "$(basename $0): fatal error: $*"
+	echo "$(basename $0): log in $log"
+	exit 1
+}
+
+hosts=/etc/hosts
+backup=/tmp/thoth.$$
+
+function onexit
+{
+	if [[ -f $backup ]]; then
+		cp $backup $hosts
+		rm $backup	
+	fi
+	
+	[[ $1 -ne 0 ]] || exit 0
+	fatal "error exit status $1"
+}
+
+trap 'onexit $? $LINENO' EXIT
+
+user=thoth
+base=/opt/custom/thoth
+home=$base/home/$user
+
+if [[ "$1" == "-f" ]]; then
+	force=true
+fi
+
+if ( ! svcs thoth 1> /dev/null 2>&1 ); then
+	fatal "'thoth' service doesn't exist"
+fi
+
+if ( ! id $user 1> /dev/null 2>&1 ); then
+	fatal "user $user doesn't exist"
+fi
+
+if [[ ! -d $home ]]; then
+	fatal "directory $home doesn't exist"
+fi
+
+if [[ -z $MANTA_URL ]]; then
+	server=us-east.manta.joyent.com
+
+	if ( ! ping $server 1>&2 ); then
+		MANTA_URL=https://`dig +short $server | head -1`
+	else
+		MANTA_URL=https://$server
+	fi
+fi
+
+#
+# Pull down the tar ball, but only install it locally; we'll assume that
+# anyone who wishes to blow way thoth on the compute nodes will do an
+# "sdc-thoth-install -f".
+#
+tarball=/var/tmp/thoth.$$.tar.gz
+staged=/tmp/thoth.$$.tar.gz
+echo "Downloading thoth update ..."
+curl -k $MANTA_URL/thoth/public/thoth.tar.gz > $staged 2>&4
+echo "Updating thoth ..."
+cd / ; gzcat $staged | tar xf - ; rm $staged 1>&2
+echo "Done"
+
