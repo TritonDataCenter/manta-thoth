@@ -30,6 +30,10 @@ var writable = true;
 var path = '/usr/node/bin:/opt/smartdc/thoth/node_modules/thoth/bin:' +
     process.env.PATH;
 var socket;
+var datacenter;
+
+var inprogress = 0;
+var waiting = [];
 
 process.env.PATH = path;
 
@@ -47,8 +51,11 @@ var options = {
 	    usage: 'set verbosity' },
 	exclude: { option: 'x', value: false,
 	    usage: 'exclude nodes specified via -n' },
+	parallelism: { option: 'p', value: 4,
+	    usage: 'max uploads to perform in parallel (default 4)' },
 	type: { option: 't', value: 'all',
-	    usage: 'type to upload (\'core\', \'crash\' or \'all\')' },
+	    usage: 'type to upload (\'core\', \'crash\', ' +
+	    'exec name or \'all\')' },
 	timeout: { option: 'T', value: 10,
 	    usage: 'timeout (in seconds) for node discovery' },
 	command: { value: '' }
@@ -268,8 +275,8 @@ var humanSize = function (size)
 	var mag = Math.floor(Math.log(size) / Math.log(1024));
 	var units = ['', 'K', 'M', 'G', 'T', 'P', 'E'];
 
-	return (mag < units.length ?
-	    ((size / Math.pow(1024, mag)).toFixed(2) * 1 + units[mag]) : size);
+	return (size == 0 ? '0' : (mag < units.length ?
+	    ((size / Math.pow(1024, mag)).toFixed(2) * 1 + units[mag]) : size));
 };
 
 var host = function (which)
@@ -282,7 +289,7 @@ var current = function (which)
 	return (mod_path.basename(status[which].dump) + ' from ' + host(which));
 };
 
-var failed = function (which, where, stdout, stderr)
+var failed = function (which, where, stdout, stderr, error)
 {
 	var failure = { failed: true, dump: status[which].dump, where: where };
 
@@ -292,6 +299,8 @@ var failed = function (which, where, stdout, stderr)
 		warn('<<< ' + where + ' stdout');
 		warn(where + ' stderr: >>>\n' + stderr);
 		warn('<<< ' + where + ' stderr');
+		warn(where + ' error: >>>\n' + sys.inspect(error));
+		warn('<<< ' + where + ' error');
 	}
 
 	status[which].done.push(failure);
@@ -380,7 +389,7 @@ var setprop = function (which)
 
 	set.on('close', function (code) {
 		if (code != 0) {
-			failed(which, 'set', stdout, stderr);
+			failed(which, 'set', stdout, stderr, { code: code });
 		} else {
 			succeeded(which);
 		}
@@ -395,6 +404,9 @@ var setprop = function (which)
 	set.stderr.on('data', function (data) {
 		stderr += data;
 	});
+
+	if (!status[which].sysinfo.Datacenter_Name && datacenter)
+		status[which].sysinfo.Datacenter_Name = datacenter;
 
 	set.stdin.write(JSON.stringify(status[which].sysinfo));
 };
@@ -420,7 +432,7 @@ var upload = function (which, filename)
 
 	var child = mod_child.exec(cmd, function (error, stdout, stderr) {
 		if (error) {
-			failed(which, 'upload', stdout, stderr);
+			failed(which, 'upload', stdout, stderr, error);
 		} else {
 			output('upload of ' + current(which) + ' complete');
 			setprop(which);
@@ -467,10 +479,39 @@ var retrieve = function (which)
 	});
 }
 
-var check = function (which)
+var initiate = function (which)
 {
 	if (!status[which].dumps || status[which].dumps.length == 0)
 		return;
+
+	if (inprogress == options.parallelism.value) {
+		output('deferring processing of ' + host(which));
+		waiting.push(which);
+		return;
+	}
+
+	inprogress++;
+	check(which);
+}
+
+var next = function ()
+{
+	if (waiting.length > 0) {
+		var which = waiting.pop();
+		output('resuming processing of ' + host(which));
+		check(which);
+		return;
+	}
+
+	inprogress--;
+}
+
+var check = function (which)
+{
+	if (!status[which].dumps || status[which].dumps.length == 0) {
+		next();
+		return;
+	}
 
 	var dump = status[which].dumps[0].split(' ');
 
@@ -499,7 +540,7 @@ var check = function (which)
 				return;
 			}
 
-			failed(which, 'info', stdout, stderr);
+			failed(which, 'info', stdout, stderr, error);
 		} else {
 			output(current(which) + ' is ' + dump[1]);
 			exists(which);
@@ -515,18 +556,20 @@ var discover = function (which)
 	var exclude = options.exclude.value;
 	var m = status[which].sysinfo;
 	var type = options.type.value;
+	var all = '';
 
 	var where = {
 		core: '/zones/*/cores/core.*',
-		crash: '/var/crash/volatile/vmdump.*',
-		all: ''
+		crash: '/var/crash/volatile/vmdump.*'
 	};
 
 	for (w in where)
-		where.all += ' ' + where[w];
+		all += ' ' + where[w];
+
+	where.all = all;
 
 	if (!where[type])
-		fatal('illegal value \'' + type + '\' for type');
+		where[type] = '/zones/*/cores/core.' + type + '.*';
 
 	var ls = 'ls -1 ' + where[type];
 
@@ -536,11 +579,15 @@ var discover = function (which)
 	    'if [[ "$?" -eq 0 ]]; then echo $d $hash $size ; fi ; done';
 
 	if (options.node.present) {
-		if (!exclude && !node[m.Hostname] && !node[m.UUID])
+		if (!exclude && !node[m.Hostname] && !node[m.UUID]) {
+			delete status[which];
 			return;
+		}
 
-		if (exclude && (node[m.Hostname] || node[m.UUID]))
+		if (exclude && (node[m.Hostname] || node[m.UUID])) {
+			delete status[which];
 			return;
+		}
 	}
 
 	status[which].discovery = true;
@@ -560,7 +607,7 @@ var discover = function (which)
 			status[which].dumps.pop();	
 		}
 
-		check(which);
+		initiate(which);
 	});
 }
 
@@ -615,6 +662,10 @@ var onReply = function (m, headers, deliveryInfo)
 	if (key[3] == sysinfoID || key[1] === 'startup') {
 		canonicalize(m);
 		status[key[2]] = { sysinfo: m };
+
+		if (!datacenter && m.Datacenter_Name)
+			datacenter = m.Datacenter_Name;
+
 		discover(key[2]);
 		return;
 	}
