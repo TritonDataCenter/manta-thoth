@@ -1402,7 +1402,12 @@ handlers.analyzer = function (client, argv)
 
 	warn('reading ' + msg + ' from stdin');
 
+	/*
+	 * We want to be sure to pause stdin after adding the 'data' listener
+	 * to assure that this code works on v0.8 and v0.10+ alike.
+	 */
 	process.stdin.on('data', function () { remove = false; });
+	process.stdin.pause();
 
 	client.mkdirp(thoth.analyzers, function (err) {
 		checkError(err);
