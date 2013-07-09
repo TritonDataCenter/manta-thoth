@@ -19,6 +19,7 @@ var sprintf = require('sprintf').sprintf;
 var handlers = {};
 
 var thoth = {
+	version: 1,
 	path: '/' + process.env.MANTA_USER + '/stor/thoth',
 	analyzers: 'analyzers',
 	verbose: true,
@@ -98,13 +99,21 @@ var hms = function (ms)
  * ELF headers and look at the type.  This routine will fail if it's not
  * an ELF file or not an ELF core file.
  */
-var isCore = function (buffer)
+var isCore = function (fd, sum)
 {
 	var width, endianness, hdr;
+	var minsize = 8192, i;
 
 	var err = function (msg) {
 		if (thoth.crazyverbose) 
 			warn('not an ELF file: ' + msg);
+	};
+
+	var int64 = function (val) {
+		if (!(val instanceof Array))
+			return (val);
+
+		return ((val[0] << 32) + val[1]);
 	};
 
 	var constants = {
@@ -470,7 +479,40 @@ var isCore = function (buffer)
 		{ e_shstrndx: { type: 'Elf_Half' } }
 	];
 
+	var Elf_Phdr32 = [
+		{ p_type: { type: 'Elf_Word' } },
+		{ p_offset: { type: 'Elf_Off' } },
+		{ p_vaddr: { type: 'Elf_Addr' } },
+		{ p_paddr: { type: 'Elf_Addr' } },
+		{ p_filesz: { type: 'Elf_Size' } },
+		{ p_memsz: { type: 'Elf_Size' } },
+		{ p_flags: { type: 'Elf_Word' } },
+		{ p_align: { type: 'Elf_Size' } }
+	];
+
+	var Elf_Phdr64 = [
+		{ p_type: { type: 'Elf_Word' } },
+		{ p_flags: { type: 'Elf_Word' } },
+		{ p_offset: { type: 'Elf_Off' } },
+		{ p_vaddr: { type: 'Elf_Addr' } },
+		{ p_paddr: { type: 'Elf_Addr' } },
+		{ p_filesz: { type: 'Elf_Size' } },
+		{ p_memsz: { type: 'Elf_Size' } },
+		{ p_align: { type: 'Elf_Size' } }
+	];
+
+	var Elf_Phdr;
+
 	var parser = new mod_ctype.Parser({ endian: 'little' });
+	var buffer = new Buffer(minsize);
+
+	try {
+		mod_fs.readSync(fd, buffer, 0, minsize, 0);
+	} catch (err) {
+		err('couldn\'t read ELF header');
+		return (false);
+	}
+
 	var ehdr = parser.readData(Elf_Ehdr.slice(0, 1), buffer, 0);
 	var hdr = ehdr.e_ident;
 
@@ -484,9 +526,11 @@ var isCore = function (buffer)
 	switch (hdr[constants.EI_CLASS]) {
 	case constants.ELFCLASS32:
 		width = '32';
+		Elf_Phdr = Elf_Phdr32;
 		break;
 	case constants.ELFCLASS64:
 		width = '64';
+		Elf_Phdr = Elf_Phdr64;
 		break;
 	default:
 		err('unknown class ' + hdr[constants.EI_CLASS]);
@@ -504,12 +548,13 @@ var isCore = function (buffer)
 		err('unknown data class ' + hdr[constants.EI_DATA]);
 		return (false);
 	}
-
+  
 	parser = new mod_ctype.Parser({ endian: endianness });
 
 	var types = {
 		Elf_Addr: 'uint' + width + '_t',
 		Elf_Off: 'uint' + width + '_t',
+		Elf_Size: 'uint' + width + '_t',
 		Elf_Half: 'uint16_t',
 		Elf_Word: 'uint32_t',
 		Elf_Sword: 'int32_t',
@@ -525,13 +570,70 @@ var isCore = function (buffer)
 	if (ehdr.e_type != constants.ET_CORE)
 		return (false);
 
+	var phdrsz = ehdr.e_phentsize * ehdr.e_phnum;
+
+	/*
+	 * Now read the program headers
+	 */
+	var pbuffer = new Buffer(phdrsz);
+
+	try {
+		mod_fs.readSync(fd, pbuffer, 0, phdrsz, int64(ehdr.e_phoff));
+	} catch (e) {
+		err('couldn\'t read ' + phdrsz +
+		    ' bytes of program headers at ' + int64(ehdr.e_phoff));
+		return (false);
+	}
+
+	for (i = 0; i < ehdr.e_phnum; i++) {
+		var notes, nsize, noffs;
+
+		var phdr = parser.readData(Elf_Phdr, pbuffer,
+		    i * ehdr.e_phentsize);
+
+		sum.update(JSON.stringify(phdr));
+
+		if (phdr.p_type != constants.PT_NOTE)
+			continue;
+
+		/*
+		 * To hash a core dump, we hash the program headers and the
+		 * note sections.  This contains information like the current
+		 * machine and process state (including microstate accounting
+		 * times) to assure that it's fully unique.
+		 */
+		noffs = int64(phdr.p_offset);
+		nsize = int64(phdr.p_filesz);
+		notes = new Buffer(nsize);
+
+		try {
+			mod_fs.readSync(fd, notes, 0, nsize, noffs);
+		} catch (e) {
+			err('couldn\'t read ' + nsize +
+			    ' bytes of PT_NOTE at ' + noffs + ': ' +
+			    util.inspect(e));
+			return (false);
+		}
+
+		sum.update(notes);
+	}
+
 	return (true);
 }
 
-var isCrash = function (buffer, outhdr)
+var isCrash = function (fd, sum)
 {
 	var parser = new mod_ctype.Parser({ endian: 'little' });
 	var hdr, p;
+
+	var minsize = 8192;
+	var buffer = new Buffer(minsize);
+
+	try {
+		mod_fs.readSync(fd, buffer, 0, minsize, 0);
+	} catch (err) {
+		return (false);
+	}
 
 	var constants = {
 		DUMP_MAGIC: 0xdefec8ed,
@@ -608,8 +710,12 @@ var isCrash = function (buffer, outhdr)
 		return (false);
 	}
 	
-	for (p in hdr)
-		outhdr[p] = hdr[p];
+	/*
+	 * To hash a dump, we hash only the dump header.  This contains enough
+	 * information (and in particular, time stamp, node name, and number
+	 * of pages) that an md5 should be sufficiently unique.
+	 */
+	sum.update(util.inspect(hdr));
 
 	return (true);
 }
@@ -836,6 +942,7 @@ processCore = function (client, stat, base, dump, cb)
 		psargs: dumpline('pr_psargs'),
 		platform: dumpfield('version'),
 		node: dumpfield('nodename'),
+		version: echo(thoth.version),
 		time: { val: echo((stat.mtime.valueOf() / 1000) + '') }
 	};
 
@@ -966,6 +1073,7 @@ var processCrash = function (client, stat, base, dump, cb)
 		dump: echo(dump),
 		platform: dumpfield('version'),
 		node: dumpfield('nodename'),
+		version: echo(thoth.version),
 		time: { val: mdb('time/E') + 'tail -1 | awk \'{print $2}\'' }
 	};
 
@@ -1049,8 +1157,7 @@ var putCrash = function (client, file, stat, base, cb)
 
 var openDump = function (name, cb, failed)
 {
-	var minsize = 8192, fd;
-	var file = { name: name };
+	var fd, file = { name: name };
 	var stat;
 	var sum = mod_crypto.createHash('md5');
 	var path = [ thoth.path ], digest;
@@ -1065,38 +1172,18 @@ var openDump = function (name, cb, failed)
 
 	file.stat = mod_fs.fstatSync(fd);
 
-	if (file.stat.size < minsize) 
-		fatal('"' + name + '" is too small to be a core or crash dump');
-
-	var buffer = new Buffer(minsize);
-	mod_fs.readSync(fd, buffer, 0, minsize, 0);
-	mod_fs.closeSync(fd);
-
-	file.hdr = {};
-
 	var done = function () {
+		mod_fs.closeSync(fd);
 		path.push(file.digest = sum.digest('hex'));
 		file.base = path.join('/');
 		cb(file);
 	};
 
-	if (isCore(buffer)) {
+	if (isCore(fd, sum)) {
 		file.type = 'core';
-
-		var stream = mod_fs.ReadStream(name);
-
-		stream.on('data', function (d) { sum.update(d) });
-		stream.on('end', done);
-	} else if (isCrash(buffer, file.hdr)) {
+		done();
+	} else if (isCrash(fd, sum)) {
 		file.type = 'crash';
-
-		/*
-		 * To hash a dump, we hash only the dump header.  This contains
-		 * enough information (and in particular, time stamp, node name,
-		 * and number of pages) that an md5 should be sufficiently
-		 * unique.
-		 */
-		sum.update(util.inspect(file.hdr));
 		done();
 	} else {
 		fatal('"' + name + '" is neither a core nor a crash dump');
