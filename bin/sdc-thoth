@@ -310,7 +310,11 @@ var failed = function (which, where, stdout, stderr, error)
 var succeeded = function (which)
 {
 	var time = new Date().valueOf() - status[which].start;
-	var success = { dump: status[which].dump, time: time };
+	var success = {
+		dump: status[which].dump,
+		size: status[which].size,
+		time: time
+	};
 
 	output('upload of ' + current(which) + ' completed in ' + hms(time));
 
@@ -416,7 +420,8 @@ var upload = function (which, filename)
 	var dir = options.dir.value + '/thoth.' + execID + '.' + which, cmd;
 
 	if (status[which].crash) {
-		cmd = 'thoth upload ' + filename;
+		cmd = 'thoth upload ' + filename + '; status=$? ; ';
+		cmd += 'rm ' + filename + ' ; exit $status;';
 	} else {
 		cmd = 'set -o xtrace ;';
 		cmd += 'mkdir ' + dir + '; cd ' + dir + ' ;';
@@ -466,8 +471,9 @@ var retrieve = function (which)
 		file = dump;
 	}
 
-	cmd += 'curl -fX PUT -T ' + file + ' http://' + config.admin_ip + ':' +
-	    socket + '/' + execID + '/' + which + '; status=$? ; ';
+	cmd += 'curl -fSX PUT -T ' + file + ' http://' + config.admin_ip + ':' +
+	    socket + '/' + execID + '/' + which + '/' +
+	    mod_path.basename(dump) + '; status=$? ; ';
 
 	if (!status[which].crash)
 		cmd += 'rm ' + file + '; ';
@@ -475,6 +481,13 @@ var retrieve = function (which)
 	cmd += 'exit $status';
 
 	execute(which, cmd, function (results) {
+		if (results.exit_status != 0) {
+			failed(which, 'curl', results.stdout, results.stderr,
+			    { code: results.exit_status });
+			check(which);
+			return;
+		}
+
 		status[which].uploaded = new Date().valueOf();
 	});
 }
@@ -718,7 +731,8 @@ var enableHTTP = function ()
 	var keepalive = function () { last = new Date().valueOf(); };
 
 	var put = function (req, res, url) {
-		var filename = options.dir.value + '/' + url[2];
+		var filename = options.dir.value +
+		    '/thoth.' + url[2] + '.' + url[3];
 		var output;
 
 		verbose('uploading to ' + filename);
@@ -753,13 +767,16 @@ var enableHTTP = function ()
 
 		var url = req.url.split('/');
 
-		if (url.length != 3) {
-			res.writeHead(404, 'expected UUID');
+		if (url.length != 4) {
+			warn('bad PUT received (length): ' + req.url);
+			res.writeHead(404, 'expected UUID and dump');
 			res.end();
 			return;
 		}
 
-		if (url[1] != execID || !status[url[2]]) {
+		if (url[1] != execID || !status[url[2]] ||
+		    mod_path.basename(status[url[2]].dump) != url[3]) {
+			warn('bad PUT received (contents): ' + req.url);
 			res.writeHead(404, 'invalid request ID');
 			res.end();
 			return;
@@ -772,16 +789,10 @@ var enableHTTP = function ()
 	});
 
 	/*
-	 * Look for an available socket on which to listen.
+	 * Listen on a random port, and get whatever port was selected for us.
 	 */
-	for (socket = 32411; socket < 33000; socket++) {
-		try {
-			server.listen(socket);
-			break;
-		} catch (err) {
-			continue;
-		}
-	}
+	server.listen(0);
+	socket = server.address().port;
 
 	pump = put;
 	method = 'PUT';
