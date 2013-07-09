@@ -27,7 +27,7 @@ var last;
 var config;
 var connection;
 var writable = true;
-var path = '/usr/node/bin:/opt/smartdc/thoth/node_modules/thoth/bin:' +
+var path = '/usr/node/bin:/opt/custom/thoth/node_modules/thoth/bin:' +
     process.env.PATH;
 var socket;
 var datacenter;
@@ -613,9 +613,7 @@ var discover = function (which)
 
 var execute = function (which, command, cb)
 {
-	var shell = '#!/bin/bash\n\nexport PATH=/usr/node/bin:' +
-	    '/opt/smartdc/thoth/node_modules/thoth/bin:' +
-	    process.env.PATH + '\n\n';
+	var shell = '#!/bin/bash\n\nexport PATH=' + process.env.PATH + '\n\n';
 
 	if (status[which].callback) {
 		fatal('attempted to execute on ' + which +
