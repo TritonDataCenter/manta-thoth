@@ -1355,13 +1355,67 @@ var argToInfo = function (client, arg, cb)
 
 var runAnalyzer = function (client, keys, analyzer)
 {
+	var sh = '/var/tmp/thoth.sh';
 	var cmd = 'export THOTH_DUMP=$MANTA_INPUT_FILE; ';
 	cmd += 'export THOTH_NAME=`basename $(dirname $MANTA_INPUT_FILE)`; ';
 	cmd += 'if ( file $MANTA_INPUT_FILE | grep "core file" > /dev/null );'
 	cmd += 'then export THOTH_TYPE=core ; else THOTH_TYPE=crash ; fi ;';
 
-	cmd += 'bash < /assets/' + analyzer + ' > /tmp/out ;';
+	cmd += 'export THOTH_INFO=/var/tmp/info.json ; ';
+	cmd += 'THOTH_INFO_OBJECT=`dirname $MANTA_INPUT_OBJECT`/info.json ;'
+	cmd += 'export THOTH_INFO_OBJECT ;';
+	cmd += 'mget $THOTH_INFO_OBJECT > $THOTH_INFO ;';
 
+	/*
+	 * Now lay down our thoth support.  Yes, the escaping here is torture,
+	 * due to the fact that we have a shell script embedded in a shell here
+	 * document that is represented as a JavaScript string.  Blech!
+	 */
+	cmd += 'cat > ' + sh + ' <<EOF\n';
+	cmd += 'set -o xtrace\n';
+	cmd += 'set -o errexit\n';
+	cmd += 'set -o pipefail\n\n';
+
+	cmd += 'thoth_fatal()\n';
+	cmd += '{\n';
+	cmd += '	echo thoth: "\\$*" 1>&2\n';
+	cmd += '	exit 1\n';
+	cmd += '}\n\n';
+
+	cmd += 'thoth_onexit()\n';
+	cmd += '{\n';
+	cmd += '	[[ \\$1 -ne 0 ]] || exit 0\n';
+	cmd += '	thoth_fatal "error exit status \\$1"\n';
+	cmd += '}\n\n';
+
+	cmd += 'thoth_setprop()\n';
+	cmd += '{\n';
+	cmd += '	local prop=\\$1\n';
+	cmd += '	local propfile=/tmp/thoth.prop\n';
+	cmd += '	local propout=/tmp/thoth.out\n';
+	cmd += '	if [[ "\\$#" -lt 1 ]]; then\n';
+	cmd += '		thoth_fatal "failed to specify property"\n';
+	cmd += '	fi\n\n';
+	cmd += '	if [[ "\\$#" -eq 2 ]]; then\n';
+	cmd += '		local propval="\\$2"\n';
+	cmd += '	else\n';
+	cmd += '		local propval=\\`cat | ';
+	cmd += ' sed \'s/\\"/\\\\\\\\\\\\\\\\"/g\' | ';
+	cmd += ' sed \':a;N;\\$!ba;s/\\\\n/\\\\\\\\\\\\n/g\'\\`\n';
+	cmd += '	fi\n\n';
+
+	cmd += '	echo "{ \\"properties\\": { \\"\\$prop\\": ';
+	cmd += '\\"\\$propval\\" } }" > \\$propfile\n';
+	cmd += '	mget \\$THOTH_INFO_OBJECT > \\$THOTH_INFO\n';
+	cmd += '	cat \\$THOTH_INFO \\$propfile | json --deep-merge ';
+	cmd += ' > \\$propout\n';
+	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
+	cmd += '}\n';
+	cmd += 'EOF\n';
+
+	cmd += 'cat /assets/' + analyzer + ' >> ' + sh + ' ; ';
+	cmd += 'bash ' + sh + ' < /dev/null > /tmp/out ;';
+	cmd += 'status=$? ; if [[ $status -ne 0 ]]; then exit $status ; fi ;';
 	cmd += 'if [ -s /tmp/out ]; then echo "=== $THOTH_NAME ===" ;'
 	cmd += 'echo ; cat /tmp/out ; echo ; fi';
 
