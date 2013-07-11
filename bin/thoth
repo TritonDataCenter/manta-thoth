@@ -888,6 +888,25 @@ jobFromSpec = function (client, argv, opts, cb)
 		    '\' at index ' + illegal.index);
 	}
 
+	if (opts.fields) {
+		var f;
+
+		cmd += '| json -a -d\\| ';
+
+		for (i = 0; i < opts.fields.length; i++)
+			cmd += opts.fields[i] + ' ';
+
+		cmd += '| awk \'BEGIN{FS="|"; printf("{");} { ';
+
+		for (i = 0; i < opts.fields.length; i++) {
+			cmd += 'printf("\\"' + opts.fields[i] + '\\": ';
+			cmd += '\\"%s\\"' + (i < opts.fields.length - 1 ?
+			    ',' : '') + '", $' + (i + 1) + '); ';
+		}
+
+		cmd += '} END{printf("}")}\'';
+	}
+
 	/*
 	 * If we're aggregating, we want to generate JSON output.
 	 */
@@ -1237,8 +1256,9 @@ handlers.ls = function (client, argv)
 	status('creating job to list');
 
 	var fmt = '%-32s %-5s %-19s %s';
+	var fields = [ 'name', 'time', 'type', 'cmd', 'node' ];
 
-	jobFromSpec(client, argv, { aggregate: false }, function (output) {
+	jobFromSpec(client, argv, { fields: fields }, function (output) {
 		var dumps = JSON.parse(output);
 
 		console.log(sprintf(fmt,
