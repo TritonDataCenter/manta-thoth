@@ -39,6 +39,10 @@ var thoth = {
 		    usage: 'set prop to val for the specified dump(s)' },
 		{ token: 'unset', params: '[dump] [prop]',
 		    usage: 'unset prop for the specified dump(s)' },
+		{ token: 'ticket', params: '[dump] [ticket]',
+		    usage: 'set ticket for the specified dump(s)' },
+		{ token: 'unticket', params: '[dump]',
+		    usage: 'unset ticket for the specified dump(s)' },
 		{ token: 'analyze', params: '[dump] [analyzer]',
 		    usage: 'analyze the specified dump(s)' },
 		{ token: 'analyzer', params: '[analyzer]',
@@ -1256,14 +1260,14 @@ handlers.ls = function (client, argv)
 {
 	status('creating job to list');
 
-	var fmt = '%-32s %-5s %-19s %s';
-	var fields = [ 'name', 'time', 'type', 'cmd', 'node' ];
+	var fmt = '%-16s %-5s %-19s %-16s %s';
+	var fields = [ 'name', 'time', 'type', 'cmd', 'node', 'ticket' ];
 
 	jobFromSpec(client, argv, { fields: fields }, function (output) {
 		var dumps = JSON.parse(output);
 
 		console.log(sprintf(fmt,
-		    'DUMP', 'TYPE', 'TIME', 'NODE/CMD'));
+		    'DUMP', 'TYPE', 'TIME', 'NODE/CMD', 'TICKET'));
 
 		dumps.sort(function (l, r) {
 		    return (l.time < r.time ?  -1 : l.time > r.time ? 1 : 0);
@@ -1274,10 +1278,11 @@ handlers.ls = function (client, argv)
 			var t = new Date(dump.time * 1000);
 
 			console.log(sprintf(fmt,
-			    mod_path.basename(dump.name),
+			    mod_path.basename(dump.name).substr(0, 16),
 			    dump.type,
 			    t.toISOString().substr(0, 19),
-			    dump.type == 'core' ? dump.cmd : dump.node));
+			    dump.type == 'core' ? dump.cmd : dump.node,
+			    dump.ticket == '' ? '-' : dump.ticket));
 		}
 
 		process.exit(0);
@@ -1314,22 +1319,23 @@ handlers.report = function (client, argv)
 	});
 };
 
-var setProp = function (client, keys, prop, val)
+var setProp = function (client, keys, prop, val, sysprop)
 {
 	var tmp = '/tmp/tmp.json';
 	var json = '/tmp/new.json';
+	var prefix = '', suffix = '';
 
 	var cmd = 'cat > ' + tmp + ' <<EOF\n';
 
-	cmd += '{ "properties": { "' + prop + '": ';
-
-	if (val instanceof Object)
-		cmd += JSON.stringify(val);
-	else {
-		cmd += '\"' + val + '\"';
+	if (!sysprop) {
+		prefix = '{ "properties": ';
+		suffix = '} ';
 	}
 
-	cmd += '} }\nEOF\n';
+	cmd += prefix + '{ "' + prop + '": ';
+	cmd += JSON.stringify(val);
+
+	cmd += '} ' + suffix + '\nEOF\n';
 
 	cmd += 'cat $MANTA_INPUT_FILE ' + tmp + ' | json --deep-merge > ' +
 	    json + ';';
@@ -1338,10 +1344,11 @@ var setProp = function (client, keys, prop, val)
 	jobOneKey(client, keys, cmd, function () { process.exit(0) });
 }
 
-var unsetProp = function (client, keys, prop, val)
+var unsetProp = function (client, keys, prop, sysprop)
 {
 	var json = '/tmp/new.json';
-	var cmd = 'cat $MANTA_INPUT_FILE | json -e "this.properties.' +
+	var cmd = 'cat $MANTA_INPUT_FILE | json -e "this.' +
+	    (sysprop ? '' : 'properties.') +
 	    prop + '=undefined" > ' + json + '; ';
 	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT'; 
 
@@ -1446,7 +1453,7 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += '	thoth_fatal "error exit status \\$1"\n';
 	cmd += '}\n\n';
 
-	cmd += 'thoth_setprop()\n';
+	cmd += 'thoth_set()\n';
 	cmd += '{\n';
 	cmd += '	local prop=\\$1\n';
 	cmd += '	local propfile=/tmp/thoth.prop\n';
@@ -1468,8 +1475,23 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += '	cat \\$THOTH_INFO \\$propfile | json --deep-merge ';
 	cmd += ' > \\$propout\n';
 	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
+	cmd += '}\n\n';
+
+	cmd += 'thoth_ticket()\n';
+	cmd += '{\n';
+	cmd += '	local propfile=/tmp/thoth.prop\n';
+	cmd += '	local propout=/tmp/thoth.out\n';
+	cmd += '	if [[ "\\$#" -lt 1 ]]; then\n';
+	cmd += '		thoth_fatal "failed to specify ticket"\n';
+	cmd += '	fi\n\n';
+
+	cmd += '	echo "{ \\"ticket\\": \\"\\$1\\" }" > \\$propfile\n';
+	cmd += '	mget \\$THOTH_INFO_OBJECT > \\$THOTH_INFO\n';
+	cmd += '	cat \\$THOTH_INFO \\$propfile | json --deep-merge ';
+	cmd += ' > \\$propout\n';
+	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
 	cmd += '}\n';
-	cmd += 'EOF\n';
+	cmd += 'EOF\n\n';
 
 	cmd += 'cat /assets/' + analyzer + ' >> ' + sh + ' ; ';
 	cmd += 'bash ' + sh + ' < /dev/null > /tmp/out ;';
@@ -1489,7 +1511,7 @@ var runAnalyzer = function (client, keys, analyzer)
 	jobOneKey(client, keys, cmd, jobOutput(client, done), preflight);
 }
 
-handlers.set = function (client, argv)
+handlers.set = function (client, argv, sysprop)
 {
 	var i, val, prop, keys = [];
 
@@ -1520,7 +1542,7 @@ handlers.set = function (client, argv)
 			prop = argv[1];
 
 			val = parseVal(argv.length >= 3 ? argv[2] : undefined);
-			setProp(client, [ path ], prop, val);
+			setProp(client, [ path ], prop, val, sysprop);
 		});
 
 		return;
@@ -1552,11 +1574,11 @@ handlers.set = function (client, argv)
 		for (name in dumps)
 			keys.push([ name, 'info.json' ].join('/'));
 
-		setProp(client, keys, prop, val);
+		setProp(client, keys, prop, val, sysprop);
 	});
 }
 
-handlers.unset = function (client, argv)
+handlers.unset = function (client, argv, sysprop)
 {
 	var prop = argv.pop();
 	var keys = [];
@@ -1566,7 +1588,7 @@ handlers.unset = function (client, argv)
 
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		argToInfo(client, argv[0], function (path) {
-			unsetProp(client, [ path ], prop, val);
+			unsetProp(client, [ path ], prop, sysprop);
 		});
 
 		return;
@@ -1583,9 +1605,28 @@ handlers.unset = function (client, argv)
 		for (name in dumps)
 			keys.push([ name, 'info.json' ].join('/'));
 
-		unsetProp(client, keys, prop);
+		unsetProp(client, keys, prop, sysprop);
 	});
 };
+
+handlers.ticket = function (client, argv)
+{
+	if (argv.length < 2)
+		fatal('need both dump specification and ticket');
+
+	var ticket = argv.pop();
+	argv.push('ticket');
+	argv.push(ticket);
+
+	return (handlers.set(client, argv, true));
+};
+
+handlers.unticket = function (client, argv)
+{
+	argv.push('ticket');
+
+	return (handlers.unset(client, argv, true));
+}
 
 handlers.analyzer = function (client, argv)
 {
