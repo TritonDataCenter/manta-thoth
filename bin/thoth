@@ -891,12 +891,12 @@ jobFromSpec = function (client, argv, opts, cb)
 	if (opts.fields) {
 		var f;
 
-		cmd += '| json -a -d\\| ';
+		cmd += ' | json -a -d\\| ';
 
 		for (i = 0; i < opts.fields.length; i++)
 			cmd += opts.fields[i] + ' ';
 
-		cmd += '| awk \'BEGIN{FS="|"; printf("{");} { ';
+		cmd += '| awk \'BEGIN{FS="|"} { printf("{"); ';
 
 		for (i = 0; i < opts.fields.length; i++) {
 			cmd += 'printf("\\"' + opts.fields[i] + '\\": ';
@@ -904,7 +904,7 @@ jobFromSpec = function (client, argv, opts, cb)
 			    ',' : '') + '", $' + (i + 1) + '); ';
 		}
 
-		cmd += '} END{printf("}")}\'';
+		cmd += '} END{if (NR == 1) { printf("}"); } }\' | json';
 	}
 
 	/*
@@ -1379,7 +1379,8 @@ var runAnalyzer = function (client, keys, analyzer)
 	var cmd = 'export THOTH_DUMP=$MANTA_INPUT_FILE; ';
 	cmd += 'export THOTH_NAME=`basename $(dirname $MANTA_INPUT_FILE)`; ';
 	cmd += 'if ( file $MANTA_INPUT_FILE | grep "core file" > /dev/null );'
-	cmd += 'then export THOTH_TYPE=core ; else THOTH_TYPE=crash ; fi ;';
+	cmd += 'then THOTH_TYPE=core ; else THOTH_TYPE=crash ; fi ;';
+	cmd += 'export THOTH_TYPE; ';
 
 	cmd += 'export THOTH_INFO=/var/tmp/info.json ; ';
 	cmd += 'THOTH_INFO_OBJECT=`dirname $MANTA_INPUT_OBJECT`/info.json ;'
@@ -1436,8 +1437,7 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += 'cat /assets/' + analyzer + ' >> ' + sh + ' ; ';
 	cmd += 'bash ' + sh + ' < /dev/null > /tmp/out ;';
 	cmd += 'status=$? ; if [[ $status -ne 0 ]]; then exit $status ; fi ;';
-	cmd += 'if [ -s /tmp/out ]; then echo "=== $THOTH_NAME ===" ;'
-	cmd += 'echo ; cat /tmp/out ; echo ; fi';
+	cmd += 'if [ -s /tmp/out ]; then cat /tmp/out ; fi';
 
 	var preflight = function (job) {
 		job.phases[0].assets = [ analyzer ];
@@ -1620,9 +1620,6 @@ handlers.analyzers = function (client, argv)
 
 handlers.analyze = function (client, argv)
 {
-	if (argv.length < 2)
-		fatal('expected both dump specification and analyzer');
-
 	var analyzer = argv.pop();
 
 	if (analyzer.indexOf('/') != 0)
