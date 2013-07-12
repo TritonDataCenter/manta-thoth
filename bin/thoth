@@ -20,6 +20,7 @@ var handlers = {};
 
 var thoth = {
 	version: 1,
+	hashlen: 32,
 	path: '/' + process.env.MANTA_USER + '/stor/thoth',
 	analyzers: 'analyzers',
 	verbose: true,
@@ -1347,6 +1348,37 @@ var unsetProp = function (client, keys, prop, val)
 	jobOneKey(client, keys, cmd, function () { process.exit(0) });
 }
 
+var partialArgToInfo = function(client, arg, cb)
+{
+	var matches = [];
+
+	client.ls(thoth.path, function (err, res) {
+		checkError(err);
+
+		res.on('directory', function (obj) {
+			if (obj.name.indexOf(arg) == -1)
+				return;
+
+			matches.push(obj.name);
+		});
+
+		res.on('end', function () {
+			if (matches.length == 0) {
+				fatal('\'' + arg + '\' doesn\'t ' +
+				    'match any dump');
+			}
+
+			if (matches.length > 1) {
+				fatal('\'' + arg + '\' underspecified; ' +
+				    '(matches ' + matches.length + ' dumps)');
+			}
+
+			argToInfo(client, matches[0], cb);
+			return;
+		});
+	});
+}
+
 var argToInfo = function (client, arg, cb)
 {
 	var object = [ thoth.path, arg, 'info.json' ].join('/');
@@ -1357,6 +1389,11 @@ var argToInfo = function (client, arg, cb)
 				argToInfo(client, file.digest, cb);
 				return;
 			}, function () {
+				if (arg.length < thoth.hashlen) {
+					partialArgToInfo(client, arg, cb);
+					return;
+				}
+
 				/*
 				 * Our info doesn't exist and it doesn't
 				 * correspond to a file on the local file
