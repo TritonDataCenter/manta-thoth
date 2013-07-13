@@ -174,8 +174,8 @@ This can be used to automate uploads of dumps.
 ### report
 
 Gives a JSON report of the given property across the given dump specification.
-For example, here's a report of ```platform``` for cores from the command
-```svc.startd```:
+For example, here's a report of ```platform``` for cores from the
+command ```svc.startd```:
 
     $ thoth report cmd=svc.startd platform
     {
