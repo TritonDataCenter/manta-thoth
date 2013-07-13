@@ -337,8 +337,8 @@ latest binary on the head-node in ```/opt/custom```, create a ```thoth```
 user and create the necessary SMF manifest as well as a ```crontab``` that
 runs ```sdc-thoth``` in dry-run mode.  You can also download and execute
 this directly from Manta (with the obvious caveats that you should really
-never just pipe the output of ```curl``` to ```bash``` running as
-```root```):
+never just pipe the output of ```curl``` to ```bash``` running
+as ```root```):
 
     # curl -k https://us-east.manta.joyent.com/thoth/public/sdc-thoth-install | bash
      
