@@ -21,7 +21,8 @@ var handlers = {};
 var thoth = {
 	version: 1,
 	hashlen: 32,
-	path: '/' + process.env.MANTA_USER + '/stor/thoth',
+	path: '/' + (process.env.THOTH_USER ? process.env.THOTH_USER :
+	    process.env.MANTA_USER) + '/stor/thoth',
 	analyzers: 'analyzers',
 	verbose: true,
 	cmds: [
@@ -873,6 +874,8 @@ jobFromSpec = function (client, argv, opts, cb)
 
 			cmd += 'json -c \'' + filter[0] + '.match(/^' +
 			    filter[1].replace(/\*/g, '.*') + '$/)\'';
+		} else if (filter[1] == 'undefined') {
+			cmd += 'json -c \'!this.' + filter[0] + '\'';
 		} else {
 			illegal = filter[1].match(/["']/);
 
@@ -1465,6 +1468,8 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += '		local propval="\\$2"\n';
 	cmd += '	else\n';
 	cmd += '		local propval=\\`cat | ';
+	cmd += ' sed \'s/\\\\\\\\\\\\\\\\/\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\/g\'';
+	cmd += ' | ';
 	cmd += ' sed \'s/\\"/\\\\\\\\\\\\\\\\"/g\' | ';
 	cmd += ' sed \':a;N;\\$!ba;s/\\\\n/\\\\\\\\\\\\n/g\'\\`\n';
 	cmd += '	fi\n\n';
