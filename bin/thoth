@@ -1482,6 +1482,18 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
 	cmd += '}\n\n';
 
+	cmd += 'thoth_unset()\n';
+	cmd += '{\n';
+	cmd += '	local propout=/tmp/thoth.out\n';
+	cmd += '	if [[ "\\$#" -lt 1 ]]; then\n';
+	cmd += '		thoth_fatal "failed to specify property"\n';
+	cmd += '	fi\n\n';
+	cmd += '	mget \\$THOTH_INFO_OBJECT > \\$THOTH_INFO\n';
+	cmd += '	cat \\$THOTH_INFO | json -e ';
+	cmd += '"this.properties.\\$1=undefined" > \\$propout\n';
+	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
+	cmd += '}\n\n';
+
 	cmd += 'thoth_ticket()\n';
 	cmd += '{\n';
 	cmd += '	local propfile=/tmp/thoth.prop\n';
@@ -1489,19 +1501,26 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += '	if [[ "\\$#" -lt 1 ]]; then\n';
 	cmd += '		thoth_fatal "failed to specify ticket"\n';
 	cmd += '	fi\n\n';
-
 	cmd += '	echo "{ \\"ticket\\": \\"\\$1\\" }" > \\$propfile\n';
 	cmd += '	mget \\$THOTH_INFO_OBJECT > \\$THOTH_INFO\n';
 	cmd += '	cat \\$THOTH_INFO \\$propfile | json --deep-merge ';
 	cmd += ' > \\$propout\n';
 	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
-	cmd += '}\n';
+	cmd += '}\n\n';
+
+	cmd += 'thoth_unticket()\n';
+	cmd += '{\n';
+	cmd += '	local propout=/tmp/thoth.out\n';
+	cmd += '	mget \\$THOTH_INFO_OBJECT > \\$THOTH_INFO\n';
+	cmd += '	cat \\$THOTH_INFO | json -e "this.ticket=undefined"';
+	cmd += ' > \\$propout\n';
+	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
+	cmd += '}\n\n';
+
 	cmd += 'EOF\n\n';
 
 	cmd += 'cat /assets/' + analyzer + ' >> ' + sh + ' ; ';
-	cmd += 'bash ' + sh + ' < /dev/null > /tmp/out ;';
-	cmd += 'status=$? ; if [[ $status -ne 0 ]]; then exit $status ; fi ;';
-	cmd += 'if [ -s /tmp/out ]; then cat /tmp/out ; fi';
+	cmd += 'bash ' + sh + ' < /dev/null';
 
 	var preflight = function (job) {
 		job.phases[0].assets = [ analyzer ];

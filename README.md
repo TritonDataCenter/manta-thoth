@@ -237,11 +237,17 @@ available in the context of an analyzer:
 
 * ```$THOTH_NAME```: The full name (that is, hash) of the dump.
 
-* ```thoth_ticket```: A shell function that will set the ticket on the 
-  dump being analyzed to the ticket specified
-
 * ```thoth_set```: A shell function that will set the specified property
   to the specified value or, if no value is specified, standard input.
+
+* ```thoth_unset```: A shell function that will unset the specified property
+  on the dump being analyzed.
+
+* ```thoth_ticket```: A shell function that will set the ticket on the 
+  dump being analyzed to the ticket specified.
+
+* ```thoth_unticket```: A shell function that will unset the ticket on the 
+  dump being analyzed.
 
 For example, here is an analyzer that looks for a particular stack
 pattern and -- if it is found -- diagnoses it to be a certain ticket.
