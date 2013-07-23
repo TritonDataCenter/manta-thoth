@@ -13,6 +13,7 @@ var mod_bunyan = require('bunyan');
 var mod_restify = require('restify');
 var mod_manta = require('manta');
 var mod_zlib = require('zlib');
+var mod_child = require('child_process');
 
 var sprintf = require('sprintf').sprintf;
 
@@ -52,6 +53,8 @@ var thoth = {
 		    usage: 'add the named analyzer from stdin' },
 		{ token: 'analyzers',
 		    usage: 'list analyzers' },
+		{ token: 'debug', params: '[dump]',
+		    usage: 'debug the specified dump via mlogin and mdb' },
 		{ token: 'logs',
 		    usage: 'list logs for the past hour' }
 	]
@@ -1307,6 +1310,49 @@ handlers.info = function (client, argv)
 		infoGet(client, argv[0], output);
 	} else {
 		jobFromSpec(client, argv, { aggregate: false }, output);
+	}
+}
+
+handlers.debug = function (client, argv)
+{
+	var mlogin = mod_path.dirname(require.resolve('manta')) +
+	    '/../bin/mlogin';
+
+	var debug = function (out) {
+		var dump = JSON.parse(out);
+
+		if (dump instanceof Array) {
+			if (dump.length > 1) {
+				fatal('specification matches ' + dump.length +
+				    ' dumps; cannot debug interactively');
+			}
+
+			dump = dump[0];
+		}
+
+		status('debugging ' +
+		    mod_path.basename(mod_path.dirname(dump.dump)));
+
+		var info = dump.name + '/info.json';
+
+		var child = mod_child.spawn(mlogin, 
+		    [ dump.dump, '-s', info,
+		    '-c',
+		    'export THOTH_INFO=/assets' + info + '; ' +
+		    'echo "thoth: dump info in \\$THOTH_INFO";' +
+		    'mdb $MANTA_INPUT_FILE' ],
+		    { stdio: 'inherit' });
+
+		child.on('close', function (code) {
+			status('debugger exited with code ' + code);
+			process.exit(code);
+		});
+	};
+
+	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
+		infoGet(client, argv[0], debug);
+	} else {
+		jobFromSpec(client, argv, { aggregate: false }, debug);
 	}
 }
 
