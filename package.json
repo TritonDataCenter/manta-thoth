@@ -9,5 +9,8 @@
 		"sprintf": "0.1.1",
 		"bunyan": "0.21.3",
 		"restify": "2.5.0"
+	},
+	"bin": {
+		"thoth": "bin/thoth"
 	}
 }
