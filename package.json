@@ -4,7 +4,7 @@
 	"private": true,
 	"version": "0.0.1",
 	"dependencies": {
-		"manta": "git+ssh://git@github.com:joyent/node-manta.git#master",
+		"manta": ">=1.0.1",
 		"ctype": ">=0.5.2",
 		"sprintf": "0.1.1",
 		"bunyan": "0.21.3",
