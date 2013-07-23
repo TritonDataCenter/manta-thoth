@@ -24,6 +24,8 @@ var thoth = {
 	path: '/' + (process.env.THOTH_USER ? process.env.THOTH_USER :
 	    process.env.MANTA_USER) + '/stor/thoth',
 	analyzers: 'analyzers',
+	logs: 'logs',
+	log: 'log',
 	verbose: true,
 	cmds: [
 		{ token: 'upload', params: '[file]',
@@ -49,7 +51,9 @@ var thoth = {
 		{ token: 'analyzer', params: '[analyzer]',
 		    usage: 'add the named analyzer from stdin' },
 		{ token: 'analyzers',
-		    usage: 'list analyzers' }
+		    usage: 'list analyzers' },
+		{ token: 'logs',
+		    usage: 'list logs for the past hour' }
 	]
 };
 
@@ -1750,6 +1754,70 @@ handlers.analyze = function (client, argv)
 	});
 };
 
+handlers.logs = function (client, argv)
+{
+	var results = [];
+	var outstanding = {};
+	var machines = 1;
+
+	var timePath = function (hours) {
+		var t = new Date(new Date().valueOf() - (3600 * hours * 1000));
+
+		return (sprintf("%02d/%02d/%02d",
+		    t.getUTCMonth() + 1, t.getUTCDate(), t.getUTCHours()));
+	};
+
+	var descend = function(path, cb) {
+		outstanding[path] = 1;
+
+		var done = function () {
+			if (--outstanding[path] == 0)
+				cb();
+		};
+
+		client.ls(path, function (err, res) {
+			res.on('error', done);
+
+			res.on('directory', function (obj) {
+				outstanding[path]++;
+				descend(path + '/' + obj.name, done);
+			});
+
+			res.on('object', function (obj) {
+				results.push(path + '/' + obj.name);
+			});
+
+			res.on('end', done);
+		});
+	};
+
+	client.ls(thoth.logs, function (err, res) {
+		var hour, i;
+
+		checkError(err);
+
+		var doneMachines = function () {
+			if (--machines == 0) {
+				results.sort();
+				for (i = 0; i < results.length; i++)
+					console.log(results[i]);
+				process.exit(0);
+			}
+		}
+
+		res.on('directory', function (obj) {
+			for (hour = 0; hour <= 1; hour++) {
+				machines++;
+				descend([ thoth.logs, obj.name,
+				    thoth.log, timePath(hour) ].join('/'),
+				    doneMachines);
+			}
+		});
+
+		res.on('end', doneMachines);
+	});
+}
+
 var connect = function()
 {
 	var i, opts = {};
@@ -1781,6 +1849,7 @@ var main = function()
 		usage('expected command');
 
 	thoth.analyzers = thoth.path + '/' + thoth.analyzers;
+	thoth.logs = thoth.path + '/' + thoth.logs;
 
 	for (i = 0; i < thoth.cmds.length; i++) {
 		if (argv[2] != thoth.cmds[i].token)
