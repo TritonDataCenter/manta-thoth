@@ -870,6 +870,14 @@ jobFromSpec = function (client, argv, opts, cb)
 		}
 
 		/*
+		 * More one-off grossness:  to allow for easy stack matching,
+		 * we always flatten the stack and delimit the frames with
+		 * colons.
+		 */
+		if (filter[0] == 'stack')
+			filter[0] = 'stack.join(":")';
+
+		/*
 		 * This is one million percent ghetto, but if we see a '*',
 		 * we'll turn it into a proper regular expression.
 		 */
@@ -880,7 +888,7 @@ jobFromSpec = function (client, argv, opts, cb)
 				break;
 
 			cmd += 'json -c \'' + filter[0] + '.match(/^' +
-			    filter[1].replace(/\*/g, '.*') + '$/)\'';
+			    filter[1].replace(/\*/g, '(.|\\n)*') + '$/)\'';
 		} else if (filter[1] == 'undefined') {
 			cmd += 'json -c \'!this.' + filter[0] + '\'';
 		} else {
