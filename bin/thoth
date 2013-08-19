@@ -1162,14 +1162,18 @@ var processCrash = function (client, stat, base, dump, cb)
 var uncompressCrash = function (client, stat, base, dump, cb)
 {
 	var vmcore = base + '/vmcore.0';
-	var cmd = 'dir=/var/tmp/savecore.$$ ;';
+	var cmd = 'set -o errexit ;';
+	cmd += 'dir=/var/tmp/savecore.$$ ;';
 	cmd += 'mkdir $dir ; savecore -f $MANTA_INPUT_FILE -d $dir ; ';
 	cmd += 'mput -f $dir/vmcore* ' + vmcore;
 
 	status('creating job to savecore ' + mod_path.basename(base));
 	jobOneKey(client, dump, cmd,
 	    function () { processCrash(client, stat, base, vmcore, cb); },
-	    function (job) { job.phases[0].disk = 128; });
+	    function (job) {
+		job.phases[0].disk = 256;
+		job.phases[0].memory = 8192;
+	    });
 };
 
 var putCrash = function (client, file, stat, base, cb)
