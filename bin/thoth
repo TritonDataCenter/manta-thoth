@@ -1420,14 +1420,25 @@ var unsetProp = function (client, keys, prop, sysprop)
 	jobOneKey(client, keys, cmd, function () { process.exit(0) });
 }
 
-var partialArgToInfo = function(client, arg, cb)
+var partialArgToInfo = function(client, arg, cb, opts, matches)
 {
-	var matches = [];
+	var last = undefined;
 
-	client.ls(thoth.path, function (err, res) {
+	if (!matches)
+		matches = [];
+
+	if (!opts)
+		opts = {}
+
+	client.ls(thoth.path, opts, function (err, res) {
 		checkError(err);
 
 		res.on('directory', function (obj) {
+			if (opts.query && obj.name == opts.query.marker)
+				return;
+
+			last = obj.name;
+
 			if (obj.name.indexOf(arg) == -1)
 				return;
 
@@ -1435,6 +1446,12 @@ var partialArgToInfo = function(client, arg, cb)
 		});
 
 		res.on('end', function () {
+			if (last) {
+				return (partialArgToInfo(client,
+				    arg, cb, { query: { marker: last } },
+				    matches));
+			}
+
 			if (matches.length == 0) {
 				fatal('\'' + arg + '\' doesn\'t ' +
 				    'match any dump');
