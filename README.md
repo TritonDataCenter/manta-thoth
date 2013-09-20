@@ -18,7 +18,7 @@ As with the [node-manta](http://github.com/node-manta) CLI tools, you will
 need to set Manta environment variables that match your Joyent Manta account:
 
     $ export MANTA_KEY_ID=`ssh-keygen -l -f ~/.ssh/id_rsa.pub | awk '{print $2}' | tr -d '\n'`
-    $ export MANTA_URL=https://manta.us-east.joyentcloud.com
+    $ export MANTA_URL=https://us-east.manta.joyentcloud.com
     $ export MANTA_USER=bcantrill
 
 # Running Thoth
@@ -58,7 +58,7 @@ list all dumps that begin with ```svc``` that don't have a ticket:
     3dae4877554defc4 core  2013-07-06T07:02:38 svc.configd      -
     7866184c07c23510 core  2013-07-11T04:47:56 svc.startd       -
     e407e3820d3af9ab core  2013-07-11T04:47:56 svc.startd       -
-     
+
 ## Subcommands
 
 ```thoth``` operates by specifying a subcommand.  Many subcommands kick
@@ -78,7 +78,7 @@ postprocess it:
     $ thoth upload core.19972
     thoth: creating 3e166b93871e7747c799008f58bd30b9
     thoth: uploading core.19972 to 3e166b93871e7747c799008f58bd30b9
-    thoth: core.19972    [=======================>] 100%   1.94MB 
+    thoth: core.19972    [=======================>] 100%   1.94MB
     thoth: creating job to uncompress 3e166b93871e7747c799008f58bd30b9
     thoth: adding key to job 84b7f163-ecda-49bd-ba8e-ffc5efd8da62
     thoth: processing job 84b7f163-ecda-49bd-ba8e-ffc5efd8da62
@@ -89,7 +89,7 @@ postprocess it:
     thoth: processing 3e166b93871e7747c799008f58bd30b9
     thoth: waiting for completion of job da3c0bf5-b04f-445b-aee7-af43ea3d17c0
     thoth: job da3c0bf5-b04f-445b-aee7-af43ea3d17c0 completed in 0h0m2s
-    
+
 ### info
 
 Returns the JSON blob associated with the specified dump.
@@ -166,7 +166,7 @@ By default, the dumps are listed in time order from oldest to newest.
 
 For a given local dump, provides the hashed name of the object.
 
-    $ thoth object core.19972 
+    $ thoth object core.19972
     3e166b93871e7747c799008f58bd30b9
 
 This can be used to automate uploads of dumps.
@@ -183,7 +183,7 @@ command ```svc.startd```:
       "joyent_20130613T200352Z": 57
     }
 
-### set 
+### set
 
 Sets a user property, which will appear in the ```properties``` field of the
 JSON blob retrieved via ```info```.  The value for the property can be
@@ -243,10 +243,10 @@ available in the context of an analyzer:
 * ```thoth_unset```: A shell function that will unset the specified property
   on the dump being analyzed.
 
-* ```thoth_ticket```: A shell function that will set the ticket on the 
+* ```thoth_ticket```: A shell function that will set the ticket on the
   dump being analyzed to the ticket specified.
 
-* ```thoth_unticket```: A shell function that will unset the ticket on the 
+* ```thoth_unticket```: A shell function that will unset the ticket on the
   dump being analyzed.
 
 For example, here is an analyzer that looks for a particular stack
@@ -258,21 +258,21 @@ pattern and -- if it is found -- diagnoses it to be a certain ticket.
     if [[ "$THOTH_TYPE" != "core" ]]; then
     	exit 0
     fi
-    
+
     #
     # This is only relevant for svc.startd
     #
     if [[ `cat $THOTH_INFO | json cmd` != "svc.startd" ]]; then
     	exit 0
     fi
-    
+
     #
     # This is only OS-2359 if we have utmpx_postfork in our stack
     #
     if ( ! mdb -e ::stack $THOTH_DUMP | grep utmpx_postfork > /dev/null ); then
     	exit 0
     fi
-    
+
     #
     # We have a winner! Set the ticket.
     #
@@ -282,7 +282,7 @@ pattern and -- if it is found -- diagnoses it to be a certain ticket.
 Here's an analyzer that sets an ```fmri``` property to be that of the
 ```SMF_FMRI``` environment variable:
 
-    if [[ "$THOTH_TYPE" != "core" ]]; then	
+    if [[ "$THOTH_TYPE" != "core" ]]; then
         exit 0
     fi
 
@@ -299,7 +299,7 @@ The output of analyzers is aggregated and displayed upon completion of
 0, standard error should be redirected to standard output by adding
 the following to the beginning of the analyzer:
 
-    exec 2>&1 
+    exec 2>&1
 
 Because ```xtrace``` is set by default on analyzers, adding this line will
 cause all tracing output to be emitted as standard output.  When developing
@@ -315,7 +315,7 @@ Uploads stdin to be the named analyzer.
     $ thoth analyzer fmri < /var/tmp/fmri.sh
     thoth: reading analyzer 'fmri' from stdin
     thoth: added analyzer 'fmri'
- 
+
 ### analyzers
 
 Lists all of the analyzers known to thoth.  These are listed as absolute
@@ -347,7 +347,7 @@ never just pipe the output of ```curl``` to ```bash``` running
 as ```root```):
 
     # curl -k https://us-east.manta.joyent.com/thoth/public/sdc-thoth-install | bash
-     
+
 ## License
 
 The MIT License (MIT)
