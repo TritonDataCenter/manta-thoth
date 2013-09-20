@@ -107,6 +107,30 @@ var hms = function (ms)
 	    (seconds % 60) + 's');
 };
 
+
+var time2seconds = function (t)
+{
+	var n, suffix, suffixes = { min: 60, h: '60min', d: '24h', w: '7d',
+	    fortnight: '2w', month: '31d', m: 'month', y: '365d',
+	    minute: 'min', week: 'w', year: 'y' };
+
+	if (isNaN(n = parseInt(t, 10))) {
+		n = 1;
+		suffix = t;
+	} else {
+		if ((suffix = t.substr((n + '').length)) == '')
+			return (n);
+	}
+
+	if (!(s = suffixes[suffix]))
+		fatal('invalid time suffix \'' + suffix + '\'');
+
+	if (typeof (s) == 'number')
+		return (n * s);
+
+	return (n * time2seconds(s));
+};
+
 /*
  * To determine if the specified file is a core file, we need to read the
  * ELF headers and look at the type.  This routine will fail if it's not
@@ -822,25 +846,76 @@ jobOneKey = function (client, key, cmd, cb, preflight)
 
 jobAllKeys = function (client, job, cb)
 {
-	/*
-	 * To run a job on all keys, we push an initial object generation phase 
-	 * (paradoxically of type 'reduce') that performs an mls and uses mcat
-	 * to feed those objects as inputs to the next phase.
-	 */
-	var cmd = 'mls ' + thoth.path + ' | awk \'{ printf("' +
-	    thoth.path + '/%s/info.json\\n", $1) }\' | xargs mcat';
+	var keys = [];
+	var now = new Date().valueOf();
+	var id, last = undefined;
+	var done = true;
 
-	job.phases.unshift({ exec: cmd, type: 'reduce' });
+	var add = function (dir) {
+		keys.push([ thoth.path, dir.name, 'info.json' ].join('/'));
+		done = false;
+	};
 
-	client.createJob(job, function (err, id) {
+	var opts = { query: { sort: 'mtime' } };
+
+	var ondir = function (err, res) {
 		checkError(err);
 
-		status('created job ' + id);
-
-		client.endJob(id, function (err) {
-			checkError(err);
-			jobWait(client, id, cb);
+		res.on('error', function (err) {
+			console.log('in error!');
+			console.log(util.inspect(err));
 		});
+
+		res.on('directory', function (dir) {
+			if (dir.mtime == opts.query.marker) {
+				if (seen[dir.name])
+					return;
+			}
+
+			var age = (now - new Date(dir.mtime).valueOf()) / 1000;
+
+			if (thoth.mtime && age > thoth.mtime) {
+				done = true;
+
+				if (thoth.oldwarn)
+					return;
+
+				status('older dumps exist; set "mtime" to ' +
+				    'a higher value to process');
+				thoth.oldwarn = true;
+				return;
+			}
+
+			if (last != dir.mtime) {
+				seen = {};
+				last = dir.mtime;
+			}
+
+			seen[dir.name] = true;
+			add(dir);
+		});
+
+		res.on('end', function () {
+			if (!done) {
+				lastlen = keys.length;
+				opts.query.marker = last;
+				done = true;
+				client.ls(thoth.path, opts, ondir);
+				return;
+			}
+
+			client.addJobKey(id, keys, { end: true },
+			    function (err) {
+				checkError(err);
+				jobWait(client, id, cb);
+			});
+		});
+	};
+
+	client.createJob(job, function (err, jobid) {
+		checkError(err);
+		status('created job ' + (id = jobid));
+		client.ls(thoth.path, opts, ondir);
 	});
 };
 
@@ -856,8 +931,6 @@ jobFromSpec = function (client, argv, opts, cb)
 	for (i = 0; i < argv.length; i++) {
 		var filter = argv[i].split('=');
 
-		cmd += ' | ';
-
 		if (filter.length != 2) {
 			if (!opts.aggregate)
 				fatal('dump specification must be "prop=val"');
@@ -865,9 +938,20 @@ jobFromSpec = function (client, argv, opts, cb)
 			if (i != argv.length - 1)
 				fatal('aggregation property must be last');
 
-			cmd += 'json ' + argv[i];
+			cmd += ' | json ' + argv[i];
 			break;
 		}
+
+		/*
+		 * mtime is a special property in that we use it to filter
+		 * client-side.
+		 */
+		if (filter[0] == 'mtime') {
+			thoth.mtime = time2seconds(filter[1]);
+			continue;
+		}
+
+		cmd += ' | ';
 
 		/*
 		 * More one-off grossness:  to allow for easy stack matching,
@@ -1428,16 +1512,16 @@ var partialArgToInfo = function(client, arg, cb, opts, matches)
 		matches = [];
 
 	if (!opts)
-		opts = {}
+		opts = { query: { sort: 'mtime' } };
 
 	client.ls(thoth.path, opts, function (err, res) {
 		checkError(err);
 
 		res.on('directory', function (obj) {
-			if (opts.query && obj.name == opts.query.marker)
+			if (opts.query && obj.mtime == opts.query.marker)
 				return;
 
-			last = obj.name;
+			last = obj.mtime;
 
 			if (obj.name.indexOf(arg) == -1)
 				return;
@@ -1447,9 +1531,10 @@ var partialArgToInfo = function(client, arg, cb, opts, matches)
 
 		res.on('end', function () {
 			if (last) {
+				opts.query.marker = last;
+
 				return (partialArgToInfo(client,
-				    arg, cb, { query: { marker: last } },
-				    matches));
+				    arg, cb, opts, matches));
 			}
 
 			if (matches.length == 0) {
