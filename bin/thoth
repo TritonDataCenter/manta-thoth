@@ -1034,7 +1034,8 @@ jobFromSpec = function (client, argv, opts, cb)
 			if (illegal)
 				break;
 
-			cmd += 'json -gc \'this.' + filter[0] + '.match(/^' +
+			cmd += 'json -gc \'this.' + filter[0] + ' && this.' +
+			    filter[0] + '.match(/^' +
 			    filter[1].replace(/\*/g, '(.|\\n)*') + '$/)\'';
 		} else if (filter[1] == 'undefined') {
 			cmd += 'json -gc \'!this.' + filter[0] + '\'';
