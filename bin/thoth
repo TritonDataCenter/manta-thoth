@@ -26,7 +26,7 @@ var thoth = {
 	    process.env.MANTA_USER) + '/stor/thoth',
 	analyzers: 'analyzers',
 	index: 'index.json',
-	unindexed: 'unindexed.json',
+	unindexed: '-unindexed.json',
 	logs: 'logs',
 	log: 'log',
 	verbose: true,
@@ -875,10 +875,28 @@ jobAllKeys = function (client, job, cb, opts)
 	var useindex = true;
 	var unindexing = opts && opts.unindexing;
 	var seenindex = false;
+	var unindexed = {};
 
 	if (thoth.mtime || !thoth.useindex ||
 	    (opts && opts.indexing) || (opts && !opts.indexed))
 		useindex = false;
+
+	var scrub = function (output) {
+		if (output.length == 0 || (opts && opts.indexing) ||
+		    (opts && opts.unindexing)) {
+			cb([]);
+			return;
+		}
+
+		var info = JSON.parse(output), i;
+
+		for (i = 0; i < info.length; i++) {
+			while (info[i].indexed && unindexed[info[i].name])
+				info.splice(i, 1);
+		}
+
+		cb(info);
+	};
 
 	var add = function (dir) {
 		again = true;
@@ -914,13 +932,17 @@ jobAllKeys = function (client, job, cb, opts)
 
 			if (useindex || unindexing) {
 				if (obj.name.match(thoth.unindexed + '$')) {
+					var n;
+
 					again = true;
 
 					if (unindexing && !seenindex)
 						return;
 
-					keys.push([ thoth.path,
-					    obj.name ].join('/'));
+					n = [ thoth.path, obj.name ].join('/');
+					keys.push(n);
+					unindexed[n.substr(0,
+					    n.indexOf(thoth.unindexed))] = true;
 				}
 
 				if (obj.name == index) {
@@ -974,7 +996,7 @@ jobAllKeys = function (client, job, cb, opts)
 			client.addJobKey(id, keys, { end: true },
 			    function (err) {
 				checkError(err);
-				jobWait(client, id, cb);
+				jobWait(client, id, jobOutput(client, scrub));
 			});
 		});
 	};
@@ -994,6 +1016,7 @@ jobFromSpec = function (client, argv, opts, cb)
 	var cmd = 'cat $MANTA_INPUT_FILE ';
 	var illegal = undefined;
 	var indexed = true;
+	var unindexed = {};
 	var i;
 
 	for (i = 0; i < argv.length; i++) {
@@ -1093,34 +1116,7 @@ jobFromSpec = function (client, argv, opts, cb)
 	job = { phases: [ { exec: cmd, type: 'map' },
 	    { exec: 'json -g', type: 'reduce' } ] };
 
-	jobAllKeys(client, job, jobOutput(client, function (output) {
-		if (output.length == 0) {
-			cb([]);
-			return;
-		}
-
-		var info = JSON.parse(output);
-		var unindexed = {};
-
-		/*
-		 * Now we want to make two passes over the results:  one to
-		 * determine which indexed entries have more recent (unindexed)
-		 * entries, and one to delete the indexed entries from the
-		 * output.
-		 */
-		for (i = 0; i < info.length; i++) {
-			if (!info[i].indexed)
-				unindexed[info[i].name] = true;
-		}
-
-		for (i = 0; i < info.length; i++) {
-			while (info[i].indexed && unindexed[info[i].name]) {
-				info.splice(i, 1);
-			}
-		}
-
-		cb(info);
-	}), { indexed: indexed })
+	jobAllKeys(client, job, cb, { indexed: indexed });
 }
 
 processStack = function ()
@@ -1579,7 +1575,7 @@ handlers.index = function (client, argv)
 
 	status('indexing all dumps');
 
-	jobAllKeys(client, job, jobOutput(client, function (output) {
+	jobAllKeys(client, job, function (output) {
 		/*
 		 * If that completed successfuly, we want to take another pass
 		 * over our directory, blowing away any unindexed objects that
@@ -1591,10 +1587,10 @@ handlers.index = function (client, argv)
 
 		status('removing formerly unindexed objects');
 
-		jobAllKeys(client, job, jobOutput(client, function (output) {
+		jobAllKeys(client, job, function (output) {
 			process.exit(0);
-		}), { unindexing: true });
-	}), { indexing: true });
+		}, { unindexing: true });
+	}, { indexing: true });
 }
 
 handlers.object = function (client, argv)
@@ -1654,7 +1650,7 @@ var setProp = function (client, keys, prop, val, sysprop)
 	    json + ';';
 	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;'; 
 	cmd += 'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
-	    '`basename $(dirname $MANTA_INPUT_OBJECT)`-' + thoth.unindexed;
+	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
  
 	jobOneKey(client, keys, cmd, function () { process.exit(0) });
 }
@@ -1667,7 +1663,7 @@ var unsetProp = function (client, keys, prop, sysprop)
 	    prop + '=undefined" > ' + json + '; ';
 	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;'; 
 	cmd += 'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
-	    '`basename $(dirname $MANTA_INPUT_OBJECT)`-' + thoth.unindexed;
+	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
 
 	jobOneKey(client, keys, cmd, function () { process.exit(0) });
 }
@@ -1758,7 +1754,7 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += 'THOTH_INFO_OBJECT=`dirname $MANTA_INPUT_OBJECT`/info.json ;'
 	cmd += 'export THOTH_INFO_OBJECT ;';
 	cmd += 'THOTH_UNINDEXED_OBJECT=' + thoth.path + '/' +
-	    '`basename $(dirname $MANTA_INPUT_OBJECT)`-' +
+	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' +
 	    thoth.unindexed + '\n';
 	cmd += 'export THOTH_UNINDEXED_OBJECT;';
 	cmd += 'mget $THOTH_INFO_OBJECT > $THOTH_INFO ;';
