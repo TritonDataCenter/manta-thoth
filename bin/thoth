@@ -2026,7 +2026,7 @@ handlers.analyze = function (client, argv)
 
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], function (output) {
-			runAnalyzer(client, [ info.dump ], analyzer);
+			runAnalyzer(client, [ output.dump ], analyzer);
 		});
 
 		return;
