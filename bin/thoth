@@ -25,9 +25,21 @@ var thoth = {
 	path: '/' + (process.env.THOTH_USER ? process.env.THOTH_USER :
 	    process.env.MANTA_USER) + '/stor/thoth',
 	analyzers: 'analyzers',
+	index: 'index.json',
+	unindexed: 'unindexed.json',
 	logs: 'logs',
 	log: 'log',
 	verbose: true,
+	indexed: {
+		name: true,
+		time: true,
+		type: true,
+		cmd: true,
+		node: true,
+		dump: true,
+		ticket: true
+	},
+	useindex: true,
 	cmds: [
 		{ token: 'upload', params: '[file]',
 		    usage: 'upload the specified core or crash dump' },
@@ -55,6 +67,8 @@ var thoth = {
 		    usage: 'list analyzers' },
 		{ token: 'debug', params: '[dump]',
 		    usage: 'debug the specified dump via mlogin and mdb' },
+		{ token: 'index',
+		    usage: 'generate (or regenerate) an index of all dumps' },
 		{ token: 'logs',
 		    usage: 'list logs for the past hour' }
 	]
@@ -796,6 +810,8 @@ jobWait = function (client, jobid, cb)
 
 jobOutput = function (client, cb)
 {
+	var found = false;
+
 	var fetchOutput = function (job, key) {
 		client.get(key, function (err, stream, res) {
 			checkError(err);
@@ -815,7 +831,11 @@ jobOutput = function (client, cb)
 	return (function (job) {
 		client.jobOutput(job.id, function (err, out) {
 			checkError(err);
-			out.on('key', function (k) { fetchOutput(job, k); });
+			out.on('key', function (k) {
+				found = true;
+				fetchOutput(job, k);
+			});
+			out.on('end', function () { if (!found) cb(); });
 		});
 	});
 }
@@ -844,45 +864,79 @@ jobOneKey = function (client, key, cmd, cb, preflight)
 	});
 };
 
-jobAllKeys = function (client, job, cb)
+jobAllKeys = function (client, job, cb, opts)
 {
 	var keys = [];
 	var now = new Date().valueOf();
 	var id, last = undefined;
-	var done = true;
+	var done = false;
+	var again = false;
+	var index = mod_path.basename(thoth.index);
+	var useindex = true;
+	var unindexing = opts && opts.unindexing;
+	var seenindex = false;
+
+	if (thoth.mtime || !thoth.useindex ||
+	    (opts && opts.indexing) || (opts && !opts.indexed))
+		useindex = false;
 
 	var add = function (dir) {
+		again = true;
+
+		if (unindexing)
+			return;
+
 		keys.push([ thoth.path, dir.name, 'info.json' ].join('/'));
-		done = false;
 	};
 
-	var opts = { query: { sort: 'mtime' } };
+	var lsopts = { query: { sort: 'mtime' } };
 
 	var ondir = function (err, res) {
 		checkError(err);
 
 		res.on('error', function (err) {
-			console.log('in error!');
-			console.log(util.inspect(err));
+			checkError(err);
 		});
 
+		if (useindex || unindexing) {
+			res.on('object', function (obj) {
+				if (obj.name.match(thoth.unindexed + '$')) {
+					again = true;
+
+					if (unindexing && !seenindex)
+						return;
+
+					keys.push([ thoth.path,
+					    obj.name ].join('/'));
+				}
+
+				if (obj.name == index) {
+					if (unindexing) {
+						seenindex = true;
+						return;
+					}
+
+					keys.push(thoth.index);
+					done = true;
+				}
+			});
+		}
+
 		res.on('directory', function (dir) {
-			if (dir.mtime == opts.query.marker) {
+			if (dir.mtime == lsopts.query.marker) {
 				if (seen[dir.name])
 					return;
 			}
+
+			if (done)
+				return;
 
 			var age = (now - new Date(dir.mtime).valueOf()) / 1000;
 
 			if (thoth.mtime && age > thoth.mtime) {
 				done = true;
-
-				if (thoth.oldwarn)
-					return;
-
 				status('older dumps exist; set "mtime" to ' +
 				    'a higher value to process');
-				thoth.oldwarn = true;
 				return;
 			}
 
@@ -896,11 +950,11 @@ jobAllKeys = function (client, job, cb)
 		});
 
 		res.on('end', function () {
-			if (!done) {
+			if (!done && again) {
 				lastlen = keys.length;
-				opts.query.marker = last;
-				done = true;
-				client.ls(thoth.path, opts, ondir);
+				lsopts.query.marker = last;
+				again = false;
+				client.ls(thoth.path, lsopts, ondir);
 				return;
 			}
 
@@ -915,7 +969,7 @@ jobAllKeys = function (client, job, cb)
 	client.createJob(job, function (err, jobid) {
 		checkError(err);
 		status('created job ' + (id = jobid));
-		client.ls(thoth.path, opts, ondir);
+		client.ls(thoth.path, lsopts, ondir);
 	});
 };
 
@@ -926,21 +980,14 @@ jobFromSpec = function (client, argv, opts, cb)
 	 */
 	var cmd = 'cat $MANTA_INPUT_FILE ';
 	var illegal = undefined;
+	var indexed = true;
 	var i;
 
 	for (i = 0; i < argv.length; i++) {
 		var filter = argv[i].split('=');
 
-		if (filter.length != 2) {
-			if (!opts.aggregate)
-				fatal('dump specification must be "prop=val"');
-	
-			if (i != argv.length - 1)
-				fatal('aggregation property must be last');
-
-			cmd += ' | json ' + argv[i];
-			break;
-		}
+		if (filter.length != 2)
+			fatal('dump specification must be "prop=val"');
 
 		/*
 		 * mtime is a special property in that we use it to filter
@@ -952,6 +999,9 @@ jobFromSpec = function (client, argv, opts, cb)
 		}
 
 		cmd += ' | ';
+
+		if (!thoth.indexed[filter[0]])
+			indexed = false;
 
 		/*
 		 * More one-off grossness:  to allow for easy stack matching,
@@ -971,23 +1021,20 @@ jobFromSpec = function (client, argv, opts, cb)
 			if (illegal)
 				break;
 
-			cmd += 'json -c \'' + filter[0] + '.match(/^' +
+			cmd += 'json -gc \'this.' + filter[0] + '.match(/^' +
 			    filter[1].replace(/\*/g, '(.|\\n)*') + '$/)\'';
 		} else if (filter[1] == 'undefined') {
-			cmd += 'json -c \'!this.' + filter[0] + '\'';
+			cmd += 'json -gc \'!this.' + filter[0] + '\'';
 		} else {
 			illegal = filter[1].match(/["']/);
 
 			if (illegal)
 				break;
 
-			cmd += 'json -c \'' + filter[0] + '=="' +
+			cmd += 'json -gc \'this.' + filter[0] + '=="' +
 			    filter[1] + '"\'';
 		}
 	}
-
-	if (opts.aggregate && i == argv.length)
-		fatal('must supply an aggregation property');
 
 	if (illegal) {
 		fatal('"' + argv[i] + '" contains illegal ' +
@@ -996,39 +1043,69 @@ jobFromSpec = function (client, argv, opts, cb)
 	}
 
 	if (opts.fields) {
-		var f;
-
-		cmd += ' | json -a -d\\| ';
-
-		for (i = 0; i < opts.fields.length; i++)
-			cmd += opts.fields[i] + ' ';
-
-		cmd += '| awk \'BEGIN{FS="|"} { printf("{"); ';
-
 		for (i = 0; i < opts.fields.length; i++) {
-			cmd += 'printf("\\"' + opts.fields[i] + '\\": ';
-			cmd += '\\"%s\\"' + (i < opts.fields.length - 1 ?
-			    ',' : '') + '", $' + (i + 1) + '); ';
+			if (!thoth.indexed[opts.fields[i]])
+				indexed = false;
 		}
 
-		cmd += '} END{if (NR == 1) { printf("}"); } }\' | json';
+		cmd += '| json -gAc this.length';
+
+		if (indexed) {
+			/*
+			 * This is entirely indexed; if we're operating on
+			 * the index, we just want to pass it through.
+			 */
+			cmd = 'if [[ `basename $MANTA_INPUT_FILE` == "' +
+			    mod_path.basename(thoth.index) + '" ]]; then ' +
+			    cmd + '; else ' + cmd;
+		}
+
+		cmd += ' | json -ja name indexed ';
+
+		/*
+		 * We always output the 'name' and 'indexed' fields.
+		 */
+		for (i = 0; i < opts.fields.length; i++) {
+			cmd += opts.fields[i] + ' ';
+		}
+
+		if (indexed)
+			cmd += '; fi';
+	} else {
+		cmd += '| json -gAc this.length';
+		indexed = false;
 	}
 
-	/*
-	 * If we're aggregating, we want to generate JSON output.
-	 */
-	var aggregate = 'sort | uniq -c | sort -n | sed \'s/"/\\\\"/g\' | ' +
-	    'awk \'BEGIN{printf("{");} ' +
-	    '{ printf("%s\\"%s\\": %s", NR > 1 ? ",\\n" : "\\n", $2, $1)} ' +
-	    'END{printf("}")}\' | json';
-
-	job = { phases: [ { exec: cmd, type: 'storage-map' },
-	    { exec: opts.aggregate ? aggregate : 'json -g',
-	    type: 'reduce' } ] };
+	job = { phases: [ { exec: cmd, type: 'map' },
+	    { exec: 'json -g', type: 'reduce' } ] };
 
 	jobAllKeys(client, job, jobOutput(client, function (output) {
-		cb(output.length > 0 ? output : '[]');
-	}))
+		if (output.length == 0) {
+			cb([]);
+			return;
+		}
+
+		var info = JSON.parse(output);
+		var unindexed = {};
+
+		/*
+		 * Now we want to make two passes over the results:  one to
+		 * determine which indexed entries have more recent (unindexed)
+		 * entries, and one to delete the indexed entries from the
+		 * output.
+		 */
+		for (i = 0; i < info.length; i++) {
+			if (!info[i].indexed)
+				unindexed[info[i].name] = true;
+		}
+
+		for (i = 0; i < info.length; i++) {
+			if (info[i].indexed && unindexed[info[i].name])
+				info.splice(i, 1);
+		}
+
+		cb(info);
+	}), { indexed: indexed })
 }
 
 processStack = function ()
@@ -1332,7 +1409,7 @@ var infoGet = function (client, dump, cb)
 		});
 
 		stream.on('end', function () {
-			cb(output);
+			cb(JSON.parse(output));
 		});
 	});
 }
@@ -1369,11 +1446,14 @@ handlers.ls = function (client, argv)
 	var fmt = '%-16s %-5s %-19s %-16s %s';
 	var fields = [ 'name', 'time', 'type', 'cmd', 'node', 'ticket' ];
 
-	jobFromSpec(client, argv, { fields: fields }, function (output) {
-		var dumps = JSON.parse(output);
-
+	jobFromSpec(client, argv, { fields: fields }, function (dumps) {
 		console.log(sprintf(fmt,
 		    'DUMP', 'TYPE', 'TIME', 'NODE/CMD', 'TICKET'));
+
+		for (i = 0; i < dumps.length; i++) {
+			if (!dumps[i].time)
+				dumps[i].time = 0;
+		}
 
 		dumps.sort(function (l, r) {
 		    return (l.time < r.time ?  -1 : l.time > r.time ? 1 : 0);
@@ -1381,6 +1461,7 @@ handlers.ls = function (client, argv)
 
 		for (i = 0; i < dumps.length; i++) {
 			var dump = dumps[i];
+
 			var t = new Date(dump.time * 1000);
 
 			console.log(sprintf(fmt,
@@ -1388,7 +1469,7 @@ handlers.ls = function (client, argv)
 			    dump.type,
 			    t.toISOString().substr(0, 19),
 			    dump.type == 'core' ? dump.cmd : dump.node,
-			    dump.ticket == '' ? '-' : dump.ticket));
+			    dump.ticket ? dump.ticket : '-'));
 		}
 
 		process.exit(0);
@@ -1398,14 +1479,14 @@ handlers.ls = function (client, argv)
 handlers.info = function (client, argv)
 {
 	var output = function (out) {
-		console.log(out);
+		console.log(JSON.stringify(out, null, 4));
 		process.exit(0);
 	};
 
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], output);
 	} else {
-		jobFromSpec(client, argv, { aggregate: false }, output);
+		jobFromSpec(client, argv, {}, output);
 	}
 }
 
@@ -1414,9 +1495,7 @@ handlers.debug = function (client, argv)
 	var mlogin = mod_path.dirname(require.resolve('manta')) +
 	    '/../bin/mlogin';
 
-	var debug = function (out) {
-		var dump = JSON.parse(out);
-
+	var debug = function (dump) {
 		if (dump instanceof Array) {
 			if (dump.length > 1) {
 				fatal('specification matches ' + dump.length +
@@ -1448,8 +1527,45 @@ handlers.debug = function (client, argv)
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], debug);
 	} else {
-		jobFromSpec(client, argv, { aggregate: false }, debug);
+		jobFromSpec(client, argv, { fields: [ 'dump' ] }, debug);
 	}
+}
+
+handlers.index = function (client, argv)
+{
+	var f;
+	var cmd = 'cat $MANTA_INPUT_FILE | json -ge \'this.indexed=true\' | ';
+	cmd += 'json -ja indexed ';
+
+	for (f in thoth.indexed)
+		cmd += f + ' ';
+
+	var reduce = 'json -g > /var/tmp/out ; '
+	reduce += 'mput -f /var/tmp/out ' + thoth.index;
+
+	var job = { phases: [
+		{ exec:  cmd, type: 'map' },
+		{ exec:  reduce, type: 'reduce' }
+	] };
+
+	status('indexing all dumps');
+
+	jobAllKeys(client, job, jobOutput(client, function (output) {
+		/*
+		 * If that completed successfuly, we want to take another pass
+		 * over our directory, blowing away any unindexed objects that
+		 * are older than our index.
+		 */
+		job = { phases: [
+			{ exec: 'mrm $MANTA_INPUT_OBJECT', type: 'map' }
+		] };
+
+		status('removing formerly unindexed objects');
+
+		jobAllKeys(client, job, jobOutput(client, function (output) {
+			process.exit(0);
+		}), { unindexing: true });
+	}), { indexing: true });
 }
 
 handlers.object = function (client, argv)
@@ -1462,8 +1578,27 @@ handlers.object = function (client, argv)
 
 handlers.report = function (client, argv)
 {
-	jobFromSpec(client, argv, { aggregate: true }, function (output) {
-		console.log(output);
+	var fields = [ argv.pop() ];
+
+	if (!fields[0])
+		fatal('must supply an aggregation property');
+
+	jobFromSpec(client, argv, { fields: fields }, function (dumps) {
+		var i, output = {}, val;
+
+		for (i = 0; i < dumps.length; i++) {
+			if (!dumps[i].hasOwnProperty(fields[0]))
+				continue;
+
+			val = dumps[i][fields[0]];
+
+			if (!output[val])
+				output[val] = 0;
+
+			output[val]++;
+		}
+
+		console.log(JSON.stringify(output, null, 4));
 		process.exit(0);
 	});
 };
@@ -1488,8 +1623,10 @@ var setProp = function (client, keys, prop, val, sysprop)
 
 	cmd += 'cat $MANTA_INPUT_FILE ' + tmp + ' | json --deep-merge > ' +
 	    json + ';';
-	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT'; 
-
+	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;'; 
+	cmd += 'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
+	    '`basename $(dirname $MANTA_INPUT_OBJECT)`-' + thoth.unindexed;
+ 
 	jobOneKey(client, keys, cmd, function () { process.exit(0) });
 }
 
@@ -1499,7 +1636,9 @@ var unsetProp = function (client, keys, prop, sysprop)
 	var cmd = 'cat $MANTA_INPUT_FILE | json -e "this.' +
 	    (sysprop ? '' : 'properties.') +
 	    prop + '=undefined" > ' + json + '; ';
-	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT'; 
+	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;'; 
+	cmd += 'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
+	    '`basename $(dirname $MANTA_INPUT_OBJECT)`-' + thoth.unindexed;
 
 	jobOneKey(client, keys, cmd, function () { process.exit(0) });
 }
@@ -1596,6 +1735,10 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += 'export THOTH_INFO=/var/tmp/info.json ; ';
 	cmd += 'THOTH_INFO_OBJECT=`dirname $MANTA_INPUT_OBJECT`/info.json ;'
 	cmd += 'export THOTH_INFO_OBJECT ;';
+	cmd += 'THOTH_UNINDEXED_OBJECT=' + thoth.path + '/' +
+	    '`basename $(dirname $MANTA_INPUT_OBJECT)`-' +
+	    thoth.unindexed + '\n';
+	cmd += 'export THOTH_UNINDEXED_OBJECT;';
 	cmd += 'mget $THOTH_INFO_OBJECT > $THOTH_INFO ;';
 
 	/*
@@ -1644,6 +1787,7 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += '	cat \\$THOTH_INFO \\$propfile | json --deep-merge ';
 	cmd += ' > \\$propout\n';
 	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
+	cmd += '	mln \\$THOTH_INFO_OBJECT \\$THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_unset()\n';
@@ -1656,6 +1800,7 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += '	cat \\$THOTH_INFO | json -e ';
 	cmd += '"this.properties.\\$1=undefined" > \\$propout\n';
 	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
+	cmd += '	mln \\$THOTH_INFO_OBJECT \\$THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_ticket()\n';
@@ -1670,6 +1815,7 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += '	cat \\$THOTH_INFO \\$propfile | json --deep-merge ';
 	cmd += ' > \\$propout\n';
 	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
+	cmd += '	mln \\$THOTH_INFO_OBJECT \\$THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_unticket()\n';
@@ -1679,6 +1825,7 @@ var runAnalyzer = function (client, keys, analyzer)
 	cmd += '	cat \\$THOTH_INFO | json -e "this.ticket=undefined"';
 	cmd += ' > \\$propout\n';
 	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
+	cmd += '	mln \\$THOTH_INFO_OBJECT \\$THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	cmd += 'EOF\n\n';
@@ -1751,16 +1898,9 @@ handlers.set = function (client, argv, sysprop)
 	if (i < argv.length)
 		argv.pop();
 
-	/*
-	 * This is a little janky to do this in two passes.
-	 */
-	argv.push('name');
-
-	jobFromSpec(client, argv, { aggregate: true }, function (output) {
-		var dumps = JSON.parse(output);
-
-		for (name in dumps)
-			keys.push([ name, 'info.json' ].join('/'));
+	jobFromSpec(client, argv, { fields: [ 'name' ] }, function (dumps) {
+		for (dump in dumps)
+			keys.push([ dumps[dump].name, 'info.json' ].join('/'));
 
 		setProp(client, keys, prop, val, sysprop);
 	});
@@ -1782,16 +1922,9 @@ handlers.unset = function (client, argv, sysprop)
 		return;
 	}
 
-	/*
-	 * This is a little janky to do this in two passes.
-	 */
-	argv.push('name');
-
-	jobFromSpec(client, argv, { aggregate: true }, function (output) {
-		dumps = JSON.parse(output);
-
-		for (name in dumps)
-			keys.push([ name, 'info.json' ].join('/'));
+	jobFromSpec(client, argv, { fields: [ 'name' ] }, function (dumps) {
+		for (dump in dumps)
+			keys.push([ dumps[dump].name, 'info.json' ].join('/'));
 
 		unsetProp(client, keys, prop, sysprop);
 	});
@@ -1893,24 +2026,19 @@ handlers.analyze = function (client, argv)
 
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], function (output) {
-			var info = JSON.parse(output);
-
 			runAnalyzer(client, [ info.dump ], analyzer);
 		});
 
 		return;
 	}
 
-	argv.push('dump');
+	jobFromSpec(client, argv, { fields: [ 'dump' ] }, function (dumps) {
+		var dump, keys = [];
 
-	jobFromSpec(client, argv, { aggregate: true }, function (output) {
-		var all = JSON.parse(output);
-		var dumps = [];
-
-		for (dump in all)
-			dumps.push(dump);
+		for (dump in dumps)
+			keys.push(dumps[dump].dump);
 	
-		runAnalyzer(client, dumps, analyzer);
+		runAnalyzer(client, keys, analyzer);
 	});
 };
 
@@ -2010,6 +2138,7 @@ var main = function()
 
 	thoth.analyzers = thoth.path + '/' + thoth.analyzers;
 	thoth.logs = thoth.path + '/' + thoth.logs;
+	thoth.index = thoth.path + '/' + thoth.index;
 
 	for (i = 0; i < thoth.cmds.length; i++) {
 		if (argv[2] != thoth.cmds[i].token)
