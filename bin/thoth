@@ -898,8 +898,21 @@ jobAllKeys = function (client, job, cb, opts)
 			checkError(err);
 		});
 
-		if (useindex || unindexing) {
-			res.on('object', function (obj) {
+		res.on('object', function (obj) {
+			if (obj.mtime == lsopts.query.marker) {
+				if (seen[obj.name])
+					return;
+			}
+
+			if (last != obj.mtime) {
+				seen = {};
+				last = obj.mtime;
+			}
+
+			seen[obj.name] = true;
+			again = true;
+
+			if (useindex || unindexing) {
 				if (obj.name.match(thoth.unindexed + '$')) {
 					again = true;
 
@@ -919,8 +932,8 @@ jobAllKeys = function (client, job, cb, opts)
 					keys.push(thoth.index);
 					done = true;
 				}
-			});
-		}
+			}
+		});
 
 		res.on('directory', function (dir) {
 			if (dir.mtime == lsopts.query.marker) {
