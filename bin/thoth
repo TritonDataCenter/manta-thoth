@@ -1114,8 +1114,9 @@ jobFromSpec = function (client, argv, opts, cb)
 		}
 
 		for (i = 0; i < info.length; i++) {
-			if (info[i].indexed && unindexed[info[i].name])
+			while (info[i].indexed && unindexed[info[i].name]) {
 				info.splice(i, 1);
+			}
 		}
 
 		cb(info);
@@ -1493,14 +1494,28 @@ handlers.ls = function (client, argv)
 handlers.info = function (client, argv)
 {
 	var output = function (out) {
-		console.log(JSON.stringify(out, null, 4));
+		console.log(out);
 		process.exit(0);
+	};
+
+	var info = function (dumps) {
+		var dump, keys = [];
+
+		for (dump in dumps)
+			keys.push([ dumps[dump].name, 'info.json' ].join('/'));
+
+		var preflight = function (job) {
+			job.phases.push({ exec: 'json -g', type: 'reduce' });
+		};
+
+		jobOneKey(client, keys, 'cat $MANTA_INPUT_FILE | json',
+		    jobOutput(client, output), preflight);
 	};
 
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], output);
 	} else {
-		jobFromSpec(client, argv, {}, output);
+		jobFromSpec(client, argv, { fields: [ 'name' ] }, info);
 	}
 }
 
