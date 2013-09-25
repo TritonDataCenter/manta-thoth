@@ -1656,12 +1656,10 @@ var unsetProp = function (client, keys, prop, sysprop)
 	jobOneKey(client, keys, cmd, function () { process.exit(0) });
 }
 
-var partialArgToInfo = function(client, arg, cb, opts, matches)
+var partialArgToInfo = function(client, arg, cb, opts)
 {
 	var last = undefined;
-
-	if (!matches)
-		matches = [];
+	var done = false;
 
 	if (!opts)
 		opts = { query: { sort: 'mtime' } };
@@ -1678,28 +1676,23 @@ var partialArgToInfo = function(client, arg, cb, opts, matches)
 			if (obj.name.indexOf(arg) == -1)
 				return;
 
-			matches.push(obj.name);
+			argToInfo(client, obj.name, cb);
+			done = true;
 		});
 
 		res.on('end', function () {
-			if (last) {
+			if (last && !done) {
 				opts.query.marker = last;
 
 				return (partialArgToInfo(client,
-				    arg, cb, opts, matches));
+				    arg, cb, opts));
 			}
 
-			if (matches.length == 0) {
+			if (!done) {
 				fatal('\'' + arg + '\' doesn\'t ' +
 				    'match any dump');
 			}
 
-			if (matches.length > 1) {
-				fatal('\'' + arg + '\' underspecified; ' +
-				    '(matches ' + matches.length + ' dumps)');
-			}
-
-			argToInfo(client, matches[0], cb);
 			return;
 		});
 	});
