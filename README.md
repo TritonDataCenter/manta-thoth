@@ -155,6 +155,11 @@ an exit status of 2 denotes that the dump was not found.
     $ thoth info core.that.i.have.never.seen.before > /dev/null ; echo $?
     2
 
+### debug
+
+Results in an interactive debugging session debugging the specified dump
+via [mlogin](http://blog.sysmgr.org/2013/06/manta-mlogin.html).
+
 ### ls
 
 Lists the dumps that match the dump specification, or all dumps if no
@@ -295,16 +300,35 @@ Here's an analyzer that sets an ```fmri``` property to be that of the
     echo $THOTH_NAME: $fmri
 
 The output of analyzers is aggregated and displayed upon completion of
-```analyze```.  To debug analyzers that are returning an exit status of
-0, standard error should be redirected to standard output by adding
-the following to the beginning of the analyzer:
+```analyze```.  
 
-    exec 2>&1
+#### Debugging analyzers
 
-Because ```xtrace``` is set by default on analyzers, adding this line will
-cause all tracing output to be emitted as standard output.  When developing
-analyzers, it is recommended to run and debug the new analyzer on a single
-dump by specifying a complete hash to ```analyze```; once the analyzer
+To debug and interactively develop analyzers, use ```thoth debug``` and
+specify both the dump and the analyzer:
+
+    % thoth debug 004a8bf33b2cd204903e46830a4f3b23 MANTA-1817-diagnose
+    thoth: debugging 004a8bf33b2cd204903e46830a4f3b23
+     * created interactive job -- 60061666-fdf4-466e-fd9c-d84eb7fbf2de
+     * waiting for session... - established
+    thoth: dump info is in $THOTH_INFO
+    thoth: analyzer "MANTA-1817-diagnose" is in $THOTH_ANALYZER
+    thoth: run "thoth_analyze" to run $THOTH_ANALYZER
+    thoth: any changes to $THOTH_ANALYZER will be stored upon successful exit
+    bcantrill@thoth #
+
+This results in an interactive shell whereby one can interactively
+edit the specified analyzer by editing the file referred to by
+```$THOTH_ANALYZER``` and can test the analyzer by running 
+```thoth_analyze```.  When the shell exits successfully (that is,
+an exit of 0), the contents of the file pointed to by ```$THOTH_ANALYZER```
+will be written to the specified analyzer.
+
+#### Testing analyzers
+
+Once an analyzer works on a single dump using ```thoth debug```,
+it is recommended to run and debug the new analyzer on a single
+dump by specifying the dump's complete hash to ```analyze```; once the analyzer
 is working, it can be run on a larger number of dumps by specifying a
 broader dump specification to ```analyze```.
 

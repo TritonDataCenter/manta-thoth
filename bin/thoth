@@ -15,6 +15,7 @@ var mod_manta = require('manta');
 var mod_zlib = require('zlib');
 var mod_child = require('child_process');
 
+var Readable = require('stream').Readable;
 var sprintf = require('sprintf').sprintf;
 
 var handlers = {};
@@ -40,6 +41,7 @@ var thoth = {
 		ticket: true
 	},
 	useindex: true,
+	analyzerdebug: false,
 	cmds: [
 		{ token: 'upload', params: '[file]',
 		    usage: 'upload the specified core or crash dump' },
@@ -1490,7 +1492,7 @@ handlers.ls = function (client, argv)
 handlers.info = function (client, argv)
 {
 	var output = function (out) {
-		console.log(out);
+		console.log(JSON.stringify(out, null, 4));
 		process.exit(0);
 	};
 
@@ -1519,6 +1521,45 @@ handlers.debug = function (client, argv)
 {
 	var mlogin = mod_path.dirname(require.resolve('manta')) +
 	    '/../bin/mlogin';
+	var analyzer = undefined;
+
+	var analyzerCmd = function(args) {
+		var cmd = 'export THOTH_ANALYZER=/var/tmp/' + analyzer + '\n';
+		var path = [ thoth.analyzers, analyzer ].join('/');
+		var analyze = 'cat \\$THOTH_ASSET \\$THOTH_ANALYZER | bash';
+
+		args = args.concat([ '-s', path ]);
+
+		cmd += 'orig=/var/tmp/' + analyzer + '.orig\n';
+		cmd += 'mget ' + path + ' > $THOTH_ANALYZER 2> /dev/null\n';
+		cmd += 'if [[ $? -ne 0 ]]; then\n';
+		cmd += '	echo "thoth: ' + analyzer + ' not found"\n';
+		cmd += '	exit 1\n';
+		cmd += 'fi\n';
+		cmd += 'cp $THOTH_ANALYZER $orig\n';
+		cmd += 'chmod +x $THOTH_ANALYZER\n';
+
+		cmd += 'echo "thoth: analyzer \\"' + analyzer + '\\" is in ' +
+		    '\\$THOTH_ANALYZER"\n';
+		cmd += 'echo "thoth: run \\\"thoth_analyze\\\" to run ' +
+		    '\\$THOTH_ANALYZER"\n';
+		cmd += 'echo "thoth: any changes to \\$THOTH_ANALYZER will ' +
+		    'be stored upon successful exit"\n';
+		cmd += 'echo "alias thoth_analyze=\\\"' + analyze +
+		    '\\\"" >> ~/.bashrc\n';
+		cmd += 'mrm $THOTH_ASSET_OBJECT\n';
+		cmd += 'if ! bash -i; then\n';
+		cmd += '	exit $?\n';
+		cmd += 'fi\n';
+		cmd += 'if cmp $THOTH_ANALYZER $orig > /dev/null 2>&1; then\n';
+		cmd += '	exit 0\n';
+		cmd += 'fi\n';
+		cmd += 'echo "thoth: storing changes to \\$THOTH_ANALYZER"\n';
+		cmd += 'mput -f $THOTH_ANALYZER ' + path + ' 2> /dev/null\n';
+		cmd += 'echo "thoth: done"\n';
+
+		return (cmd);
+	};
 
 	var debug = function (dump) {
 		if (dump instanceof Array) {
@@ -1534,20 +1575,32 @@ handlers.debug = function (client, argv)
 		    mod_path.basename(mod_path.dirname(dump.dump)));
 
 		var info = dump.name + '/info.json';
+		var cmd = 'echo "thoth: dump info is in \\$THOTH_INFO"\n';
 
-		var child = mod_child.spawn(mlogin, 
-		    [ dump.dump, '-s', info,
-		    '-c',
-		    'export THOTH_INFO=/assets' + info + '; ' +
-		    'echo "thoth: dump info in \\$THOTH_INFO";' +
-		    'mdb $MANTA_INPUT_FILE' ],
-		    { stdio: 'inherit' });
+		var args = [ dump.dump ];
 
-		child.on('close', function (code) {
-			status('debugger exited with code ' + code);
-			process.exit(code);
+		if (analyzer) {
+			cmd += analyzerCmd(args);
+		} else {
+			cmd += 'mdb $MANTA_INPUT_FILE';
+		}
+
+		setAnalyzer(client, cmd, function (asset) { 	
+			args = args.concat([ '-s', asset,
+			    '-c', '/assets/' + asset ]);
+
+			var child = mod_child.spawn(mlogin, args,
+			    { stdio: 'inherit' });
+
+			child.on('close', function (code) {
+				status('debugger exited with code ' + code);
+				process.exit(code);
+			});
 		});
 	};
+
+	if (argv.length > 1 && argv[argv.length - 1].indexOf('=') == -1)
+		analyzer = argv.pop();
 
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], debug);
@@ -1741,127 +1794,161 @@ var argToInfo = function (client, arg, cb)
 	});
 }
 
-var runAnalyzer = function (client, keys, analyzer)
+var setAnalyzer = function (client, exec, cb)
 {
-	var sh = '/var/tmp/thoth.sh';
-	var cmd = 'export THOTH_DUMP=$MANTA_INPUT_FILE; ';
-	cmd += 'export THOTH_NAME=`basename $(dirname $MANTA_INPUT_FILE)`; ';
-	cmd += 'if ( file $MANTA_INPUT_FILE | grep "core file" > /dev/null );'
-	cmd += 'then THOTH_TYPE=core ; else THOTH_TYPE=crash ; fi ;';
-	cmd += 'export THOTH_TYPE; ';
+	var cmd = '';
 
-	cmd += 'export THOTH_INFO=/var/tmp/info.json ; ';
-	cmd += 'THOTH_INFO_OBJECT=`dirname $MANTA_INPUT_OBJECT`/info.json ;'
-	cmd += 'export THOTH_INFO_OBJECT ;';
-	cmd += 'THOTH_UNINDEXED_OBJECT=' + thoth.path + '/' +
-	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' +
-	    thoth.unindexed + '\n';
-	cmd += 'export THOTH_UNINDEXED_OBJECT;';
-	cmd += 'mget $THOTH_INFO_OBJECT > $THOTH_INFO ;';
-
-	/*
-	 * Now lay down our thoth support.  Yes, the escaping here is torture,
-	 * due to the fact that we have a shell script embedded in a shell here
-	 * document that is represented as a JavaScript string.  Blech!
-	 */
-	cmd += 'cat > ' + sh + ' <<EOF\n';
-	cmd += 'set -o xtrace\n';
-	cmd += 'set -o errexit\n';
-	cmd += 'set -o pipefail\n\n';
+	if (thoth.analyzerdebug)
+		cmd += 'set -o xtrace\n';
 
 	cmd += 'thoth_fatal()\n';
 	cmd += '{\n';
-	cmd += '	echo thoth: "\\$*" 1>&2\n';
+	cmd += '	echo thoth: "$*" 1>&2\n';
 	cmd += '	exit 1\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_onexit()\n';
 	cmd += '{\n';
-	cmd += '	[[ \\$1 -ne 0 ]] || exit 0\n';
-	cmd += '	thoth_fatal "error exit status \\$1"\n';
+	cmd += '	[[ $1 -ne 0 ]] || exit 0\n';
+	cmd += '	thoth_fatal "error exit status $1"\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_set()\n';
 	cmd += '{\n';
-	cmd += '	local prop=\\$1\n';
+	cmd += '	local prop=$1\n';
 	cmd += '	local propfile=/tmp/thoth.prop\n';
 	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	if [[ "\\$#" -lt 1 ]]; then\n';
+	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
 	cmd += '		thoth_fatal "failed to specify property"\n';
 	cmd += '	fi\n\n';
-	cmd += '	if [[ "\\$#" -eq 2 ]]; then\n';
-	cmd += '		local propval="\\$2"\n';
+	cmd += '	if [[ "$#" -eq 2 ]]; then\n';
+	cmd += '		local propval="$2"\n';
 	cmd += '	else\n';
-	cmd += '		local propval=\\`cat | ';
-	cmd += ' sed \'s/\\\\\\\\\\\\\\\\/\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\/g\'';
+	cmd += '		local propval=`cat | ';
+	cmd += ' sed \'s/\\\\\\\\/\\\\\\\\\\\\\\\\/g\'';
 	cmd += ' | ';
-	cmd += ' sed \'s/\\"/\\\\\\\\\\\\\\\\"/g\' | ';
-	cmd += ' sed \':a;N;\\$!ba;s/\\\\n/\\\\\\\\\\\\n/g\'\\`\n';
+	cmd += ' sed \'s/"/\\\\\\\\"/g\' | ';
+	cmd += ' sed \':a;N;$!ba;s/\\\\n/\\\\\\\\n/g\'`\n';
 	cmd += '	fi\n\n';
 
-	cmd += '	echo "{ \\"properties\\": { \\"\\$prop\\": ';
-	cmd += '\\"\\$propval\\" } }" > \\$propfile\n';
-	cmd += '	mget \\$THOTH_INFO_OBJECT > \\$THOTH_INFO\n';
-	cmd += '	cat \\$THOTH_INFO \\$propfile | json --deep-merge ';
-	cmd += ' > \\$propout\n';
-	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
-	cmd += '	mln \\$THOTH_INFO_OBJECT \\$THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	echo "{ \\"properties\\": { \\"$prop\\": ';
+	cmd += '\\"$propval\\" } }" > $propfile\n';
+	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
+	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
+	cmd += ' > $propout\n';
+	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
+	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_unset()\n';
 	cmd += '{\n';
 	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	if [[ "\\$#" -lt 1 ]]; then\n';
+	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
 	cmd += '		thoth_fatal "failed to specify property"\n';
 	cmd += '	fi\n\n';
-	cmd += '	mget \\$THOTH_INFO_OBJECT > \\$THOTH_INFO\n';
-	cmd += '	cat \\$THOTH_INFO | json -e ';
-	cmd += '"this.properties.\\$1=undefined" > \\$propout\n';
-	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
-	cmd += '	mln \\$THOTH_INFO_OBJECT \\$THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
+	cmd += '	cat $THOTH_INFO | json -e ';
+	cmd += '"this.properties.$1=undefined" > $propout\n';
+	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
+	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_ticket()\n';
 	cmd += '{\n';
 	cmd += '	local propfile=/tmp/thoth.prop\n';
 	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	if [[ "\\$#" -lt 1 ]]; then\n';
+	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
 	cmd += '		thoth_fatal "failed to specify ticket"\n';
 	cmd += '	fi\n\n';
-	cmd += '	echo "{ \\"ticket\\": \\"\\$1\\" }" > \\$propfile\n';
-	cmd += '	mget \\$THOTH_INFO_OBJECT > \\$THOTH_INFO\n';
-	cmd += '	cat \\$THOTH_INFO \\$propfile | json --deep-merge ';
-	cmd += ' > \\$propout\n';
-	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
-	cmd += '	mln \\$THOTH_INFO_OBJECT \\$THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	echo "{ \\"ticket\\": \\"$1\\" }" > $propfile\n';
+	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
+	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
+	cmd += ' > $propout\n';
+	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
+	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_unticket()\n';
 	cmd += '{\n';
 	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	mget \\$THOTH_INFO_OBJECT > \\$THOTH_INFO\n';
-	cmd += '	cat \\$THOTH_INFO | json -e "this.ticket=undefined"';
-	cmd += ' > \\$propout\n';
-	cmd += '	mput -f \\$propout \\$THOTH_INFO_OBJECT\n';
-	cmd += '	mln \\$THOTH_INFO_OBJECT \\$THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
+	cmd += '	cat $THOTH_INFO | json -e "this.ticket=undefined"';
+	cmd += ' > $propout\n';
+	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
+	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
-	cmd += 'EOF\n\n';
+	var asset = thoth.analyzers + '/.thoth.' + process.pid + '.' +
+	    (new Date().valueOf() / 1000);
 
-	cmd += 'cat /assets/' + analyzer + ' >> ' + sh + ' ; ';
-	cmd += 'bash ' + sh + ' < /dev/null';
+	cmd += 'if [[ -z "$THOTH_DUMP" ]]; then\n';
+	cmd += '	export THOTH_DUMP=$MANTA_INPUT_FILE\n';
+	cmd += '	THOTH_NAME=`basename $(dirname $MANTA_INPUT_FILE)`\n';
+	cmd += '	export THOTH_NAME\n';
+	cmd += '	export THOTH_INFO=/var/tmp/info.json\n';
+	cmd += '	THOTH_DIR=`dirname $MANTA_INPUT_OBJECT`\n';
+	cmd += '	export THOTH_INFO_OBJECT=${THOTH_DIR}/info.json\n'
+	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO 2> /dev/null\n\n';
+	cmd += '	export THOTH_TYPE=`cat $THOTH_INFO | json type`\n';
+	cmd += '	export THOTH_ASSET_OBJECT=' + asset + '\n';
+	cmd += '	export THOTH_ASSET=/assets/' + asset + '\n';
+	cmd += '	echo "source $THOTH_ASSET" > ~/.bashrc\n';
+	cmd += '	echo "PS1=\\\"${MANTA_USER}@thoth # \\\"" >> ' +
+			    '~/.bashrc\n';
+	cmd += '	export THOTH_UNINDEXED_OBJECT=${THOTH_DIR}' +
+			    thoth.unindexed + '\n\n';
+	cmd += '	' + exec + '\n';
+	cmd += 'fi\n';
 
-	var preflight = function (job) {
-		job.phases[0].assets = [ analyzer ];
-		job.phases.push({ exec: 'cat', type: 'reduce' });
+	/*
+	 * Create a simple Readable to mput our string.
+	 */
+	util.inherits(Analyzer, Readable);
+
+	function Analyzer(str) {
+		Readable.call(this);
+		this.str = str;
 	};
 
-	var done = function (output) {
-		console.log(output);
-		process.exit(0);
-	}
+	Analyzer.prototype._read = function () {
+		if (this.str) {
+			var buf = new Buffer(this.str, 'ascii');
+			this.push(buf);
+			this.str = null;
+		} else {
+			this.push(null);
+		}
+	};
 
-	jobOneKey(client, keys, cmd, jobOutput(client, done), preflight);
+	var analyzer = new Analyzer(cmd);
+
+	client.put(asset, analyzer, function (err) {
+		checkError(err);
+		cb(asset);
+	});
+}
+
+var runAnalyzer = function (client, keys, analyzer)
+{
+	var cmd = 'cat $THOTH_ASSET /assets/' + analyzer + ' | bash\n';
+
+	setAnalyzer(client, cmd, function (asset) {
+		var preflight = function (job) {
+			job.phases[0].assets = [ asset, analyzer ];
+			job.phases.push({ exec: 'cat', type: 'reduce' });
+		};
+
+		var done = function (output) {
+			console.log(output);
+			client.unlink(asset, function (err) {
+				checkError(err);
+				process.exit(0);
+			});
+		}
+
+		jobOneKey(client, keys, 'bash < /assets/' + asset,
+		    jobOutput(client, done), preflight);
+	});
 }
 
 handlers.set = function (client, argv, sysprop)
