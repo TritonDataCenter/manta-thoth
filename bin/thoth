@@ -893,7 +893,8 @@ jobAllKeys = function (client, job, cb, opts)
 		var info = JSON.parse(output), i;
 
 		for (i = 0; i < info.length; i++) {
-			while (info[i].indexed && unindexed[info[i].name])
+			while (i < info.length && info[i].indexed &&
+			    unindexed[info[i].name])
 				info.splice(i, 1);
 		}
 
@@ -934,7 +935,7 @@ jobAllKeys = function (client, job, cb, opts)
 
 			if (useindex || unindexing) {
 				if (obj.name.match(thoth.unindexed + '$')) {
-					var n;
+					var n, key;
 
 					again = true;
 
@@ -942,9 +943,13 @@ jobAllKeys = function (client, job, cb, opts)
 						return;
 
 					n = [ thoth.path, obj.name ].join('/');
-					keys.push(n);
-					unindexed[n.substr(0,
-					    n.indexOf(thoth.unindexed))] = true;
+					n = n.substr(0,
+					    n.indexOf(thoth.unindexed));
+
+					if (!unindexed[n]) {
+						keys.push(n);
+						unindexed[n] = true;
+					}
 				}
 
 				if (obj.name == index) {
@@ -1507,7 +1512,8 @@ handlers.info = function (client, argv)
 		};
 
 		jobOneKey(client, keys, 'cat $MANTA_INPUT_FILE | json',
-		    jobOutput(client, output), preflight);
+		    jobOutput(client, function (out) { output(JSON.parse(out)); }),
+		    preflight);
 	};
 
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
