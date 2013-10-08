@@ -935,7 +935,7 @@ jobAllKeys = function (client, job, cb, opts)
 
 			if (useindex || unindexing) {
 				if (obj.name.match(thoth.unindexed + '$')) {
-					var n, key;
+					var k, n, key;
 
 					again = true;
 
@@ -943,12 +943,12 @@ jobAllKeys = function (client, job, cb, opts)
 						return;
 
 					n = [ thoth.path, obj.name ].join('/');
-					n = n.substr(0,
+					k = n.substr(0,
 					    n.indexOf(thoth.unindexed));
 
-					if (!unindexed[n]) {
+					if (!unindexed[k]) {
 						keys.push(n);
-						unindexed[n] = true;
+						unindexed[k] = true;
 					}
 				}
 
@@ -1123,7 +1123,17 @@ jobFromSpec = function (client, argv, opts, cb)
 	job = { phases: [ { exec: cmd, type: 'map' },
 	    { exec: 'json -g', type: 'reduce' } ] };
 
-	jobAllKeys(client, job, cb, { indexed: indexed });
+	var postprocess = function (keys) {
+		if (keys.length == 0) {
+			warn('dump specification does not match any dumps');
+			process.exit(1);
+			return;
+		}
+
+		cb(keys);
+	}
+
+	jobAllKeys(client, job, postprocess, { indexed: indexed });
 }
 
 processStack = function ()
@@ -1512,7 +1522,8 @@ handlers.info = function (client, argv)
 		};
 
 		jobOneKey(client, keys, 'cat $MANTA_INPUT_FILE | json',
-		    jobOutput(client, function (out) { output(JSON.parse(out)); }),
+		    jobOutput(client, function (out)
+		    { output(JSON.parse(out)); }),
 		    preflight);
 	};
 
