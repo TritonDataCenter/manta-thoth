@@ -18,26 +18,21 @@ var requestID = function ()
 
 var sysinfoID = requestID();
 var execID = requestID();
-var outstanding = 0;
 var status = {};
 var cmd = 'sdc-thoth';
-var start = new Date().valueOf();
 var exchange;
-var last;
 var config;
 var connection;
 var writable = true;
 var path = '/usr/node/bin:/opt/custom/thoth/node_modules/thoth/bin:' +
     process.env.PATH;
 var socket;
-var datacenter;
-
-var inprogress = 0;
-var waiting = [];
 
 process.env.PATH = path;
 
 var options = {
+	deadman: { option: 'D', value: 360,
+	    usage: 'deadman timeout (in minutes)' },
 	dir: { option: 'd', value: '/var/tmp',
 	    usage: 'directory in which to write files' },
 	'dry-run': { option: 'n', value: false,
@@ -58,7 +53,18 @@ var options = {
 	    'exec name or \'all\')' },
 	timeout: { option: 'T', value: 10,
 	    usage: 'timeout (in seconds) for node discovery' },
+	exectimeout: { option: 'e', value: 600,
+	    usage: 'timeout (in seconds) for remote execution' },
 	command: { value: '' }
+};
+
+var globals = {
+	g_status: status,
+	g_options: options,
+	g_start: new Date().valueOf(),
+	g_inprogress: 0,
+	g_datacenter: undefined,
+	g_waiting: []
 };
 
 var exit = function (code, asynchronous)
@@ -376,7 +382,7 @@ var summarize = function ()
 
 	output((options['dry-run'].value ? 'would have ' : '') +
 	    'uploaded ' + humanSize(ttl)  + ' bytes');
-	output('total run time ' + hms(new Date().valueOf() - start));
+	output('total run time ' + hms(new Date().valueOf() - globals.g_start));
 
 	exit(code);
 };
@@ -409,8 +415,8 @@ var setprop = function (which)
 		stderr += data;
 	});
 
-	if (!status[which].sysinfo.Datacenter_Name && datacenter)
-		status[which].sysinfo.Datacenter_Name = datacenter;
+	if (!status[which].sysinfo.Datacenter_Name && globals.g_datacenter)
+		status[which].sysinfo.Datacenter_Name = globals.g_datacenter;
 
 	set.stdin.write(JSON.stringify(status[which].sysinfo));
 };
@@ -497,26 +503,26 @@ var initiate = function (which)
 	if (!status[which].dumps || status[which].dumps.length == 0)
 		return;
 
-	if (inprogress == options.parallelism.value) {
+	if (globals.g_inprogress == options.parallelism.value) {
 		output('deferring processing of ' + host(which));
-		waiting.push(which);
+		globals.g_waiting.push(which);
 		return;
 	}
 
-	inprogress++;
+	globals.g_inprogress++;
 	check(which);
 }
 
 var next = function ()
 {
-	if (waiting.length > 0) {
-		var which = waiting.pop();
+	if (globals.g_waiting.length > 0) {
+		var which = globals.g_waiting.pop();
 		output('resuming processing of ' + host(which));
 		check(which);
 		return;
 	}
 
-	inprogress--;
+	globals.g_inprogress--;
 }
 
 var check = function (which)
@@ -573,6 +579,7 @@ var discover = function (which)
 
 	var where = {
 		core: '/zones/*/cores/core.*',
+		gcore: '/zones/*/root/var/tmp/thoth/core.*',
 		crash: '/var/crash/volatile/vmdump.*'
 	};
 
@@ -634,7 +641,7 @@ var execute = function (which, command, cb)
 	}
 
 	status[which].callback = cb;
-	outstanding++;
+	status[which].outstanding++;
 	exchange.publish('ur.execute.' + which + '.' + execID,
 	    { type: 'script', script: shell + command,
 	    args: [], env: {} });
@@ -672,10 +679,11 @@ var onReply = function (m, headers, deliveryInfo)
 
 	if (key[3] == sysinfoID || key[1] === 'startup') {
 		canonicalize(m);
-		status[key[2]] = { sysinfo: m };
+		status[key[2]] =
+		    { sysinfo: m, outstanding: 0, last: new Date().valueOf() };
 
-		if (!datacenter && m.Datacenter_Name)
-			datacenter = m.Datacenter_Name;
+		if (!globals.g_datacenter && m.Datacenter_Name)
+			globals.g_datacenter = m.Datacenter_Name;
 
 		discover(key[2]);
 		return;
@@ -687,8 +695,14 @@ var onReply = function (m, headers, deliveryInfo)
 		status[key[2]].result = m;
 		status[key[2]].callback = undefined;
 
+		if (status[key[2]].aborted) {
+			verbose('execution on ' + key[2] + ' aborted');
+			return;
+		}
+
+		status[key[2]].outstanding--;
+
 		callback(m);
-		outstanding--;
 		return;
 	}
 };
@@ -728,7 +742,7 @@ var onReady = function ()
 var enableHTTP = function ()
 {
 	var local, size, pump, method;
-	var keepalive = function () { last = new Date().valueOf(); };
+	var keepalive = function (what) { what.last = new Date().valueOf(); };
 
 	var put = function (req, res, url) {
 		var filename = options.dir.value +
@@ -740,12 +754,20 @@ var enableHTTP = function ()
 		output = mod_fs.createWriteStream(filename);
 
 		output.addListener('close', function () {
-			outstanding--;
+			if (status[url[2]].aborted) {
+				verbose('upload to ' + filename + ' aborted');
+				return;
+			}
+
+			status[url[2]].outstanding--;
 			verbose('upload to ' + filename + ' completed');
 			upload(url[2], filename);
 		});
 
-		req.addListener('data', keepalive);
+		req.addListener('data', function () {
+			keepalive(status[url[2]]);
+		});
+
 		req.addListener('end', function () {
 			res.writeHead(200);
 			res.end();
@@ -782,8 +804,8 @@ var enableHTTP = function ()
 			return;
 		}
 
-		keepalive();
-		outstanding++;
+		status[url[2]].outstanding++;
+		keepalive(status[url[2]]);
 
 		pump(req, res, url);
 	});
@@ -862,20 +884,41 @@ mod_child.execFile('/bin/bash',
 
 	var r = config.rabbitmq.split(':');
 	var creds = { login: r[0], password: r[1], host: r[2], port: r[3] };
-
+	var deadman = options.deadman.value * 60 * 1000;
 	connection = mod_amqp.createConnection(creds);
 	connection.addListener('ready', onReady);
 
 	var id = setInterval(function () {
-		var now = new Date().valueOf();
+		globals.g_now = new Date().valueOf();
 		var timeout = options.timeout.value * 1000;
 		var which;
 
-		if (outstanding || now - start < timeout)
+		if (globals.g_now - globals.g_start < timeout)
 			return;
+
+		if (globals.g_now - globals.g_start > deadman) {
+			warn('deadman timeout exceeded; exiting');
+			process.abort();
+		}
 
 		for (which in status) {
 			var dumps = status[which].dumps;
+
+			if (status[which].aborted)
+				continue;
+
+			if (status[which].outstanding) {
+				var exec = options.exectimeout.value * 1000;
+
+				if (globals.g_now - status[which].last < exec)
+					return;
+
+				warn('execution timeout exceeded for ' +
+				    which + '; aborting node');
+
+				status[which].aborted = true;
+				continue;
+			}
 
 			if (status[which].discovery)
 				return;
