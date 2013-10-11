@@ -1564,7 +1564,6 @@ handlers.debug = function (client, argv)
 		    'be stored upon successful exit"\n';
 		cmd += 'echo "alias thoth_analyze=\\\"' + analyze +
 		    '\\\"" >> ~/.bashrc\n';
-		cmd += 'mrm $THOTH_ASSET_OBJECT\n';
 		cmd += 'if ! bash -i; then\n';
 		cmd += '	exit $?\n';
 		cmd += 'fi\n';
@@ -1908,6 +1907,7 @@ var setAnalyzer = function (client, exec, cb)
 	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO 2> /dev/null\n\n';
 	cmd += '	export THOTH_TYPE=`cat $THOTH_INFO | json type`\n';
 	cmd += '	export THOTH_ASSET_OBJECT=' + asset + '\n';
+	cmd += '	mrm $THOTH_ASSET_OBJECT\n';
 	cmd += '	export THOTH_ASSET=/assets/' + asset + '\n';
 	cmd += '	echo "source $THOTH_ASSET" > ~/.bashrc\n';
 	cmd += '	echo "PS1=\\\"${MANTA_USER}@thoth # \\\"" >> ' +
