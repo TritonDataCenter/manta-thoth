@@ -8,7 +8,8 @@
 		"ctype": ">=0.5.2",
 		"sprintf": "0.1.1",
 		"bunyan": "0.21.3",
-		"restify": "2.5.0"
+		"restify": "2.5.0",
+		"readable-stream": ">=1.1.9"
 	},
 	"bin": {
 		"thoth": "bin/thoth"

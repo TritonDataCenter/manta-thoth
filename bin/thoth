@@ -1917,6 +1917,13 @@ var setAnalyzer = function (client, exec, cb)
 	cmd += '	' + exec + '\n';
 	cmd += 'fi\n';
 
+	if (!Readable) {
+		/*
+		 * If we're on node 0.8, pull in streams2 explicitly.
+		 */
+		Readable = require('readable-stream/readable');
+	}
+
 	/*
 	 * Create a simple Readable to mput our string.
 	 */
