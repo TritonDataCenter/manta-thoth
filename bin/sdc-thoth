@@ -424,18 +424,37 @@ var setprop = function (which)
 var upload = function (which, filename)
 {
 	var dir = options.dir.value + '/thoth.' + execID + '.' + which, cmd;
+	var props = filename.split('.'), i;
 
 	if (status[which].crash) {
 		cmd = 'thoth upload ' + filename + '; status=$? ; ';
-		cmd += 'rm ' + filename + ' ; exit $status;';
+		cmd += 'rm ' + filename + ' ; ';
 	} else {
 		cmd = 'set -o xtrace ;';
 		cmd += 'mkdir ' + dir + '; cd ' + dir + ' ;';
 		cmd += 'gunzip -c ' + filename + ' | tar xvf - ;'
 		cmd += 'thoth upload * ; status=$? ; ';
 		cmd += 'cd / ; rm ' + filename + '; rm -rf ' + dir + '; '; 
-		cmd += 'exit $status';
 	}
+
+	for (i = 0; i < props.length; i++) {
+		var prop = props[i].split('=');
+
+		if (prop.length != 2)
+			continue;
+
+		cmd += 'if [[ $status -eq 0 ]]; then thoth ';
+
+		if (prop[0] != 'ticket') {
+			cmd += 'set ' + status[which].hash + ' ' + prop[0];
+		} else {
+			cmd += 'ticket ' + status[which].hash;
+		}
+
+		cmd += ' ' + prop[1] + '; status=$? ; fi ;'
+	}
+
+	cmd += 'exit $status ;';
 
 	output('staging upload of ' + current(which) + ' complete');
 	output('uploading ' + mod_path.basename(status[which].dump) +
@@ -574,12 +593,14 @@ var discover = function (which)
 	var node = options.node.value;
 	var exclude = options.exclude.value;
 	var m = status[which].sysinfo;
-	var type = options.type.value;
-	var all = '';
+	var type = options.type.value.split(',');
+	var all = '', i;
 
 	var where = {
+		global: '/zones/global/cores/core.*',
 		core: '/zones/*/cores/core.*',
-		gcore: '/zones/*/root/var/tmp/thoth/core.*',
+		gcore: '/var/tmp/thoth/core.* ' +
+		    '/zones/*/root/var/tmp/thoth/core.*',
 		crash: '/var/crash/volatile/vmdump.*'
 	};
 
@@ -587,11 +608,15 @@ var discover = function (which)
 		all += ' ' + where[w];
 
 	where.all = all;
-
-	if (!where[type])
-		where[type] = '/zones/*/cores/core.' + type + '.*';
-
-	var ls = 'ls -1 ' + where[type];
+	var ls = 'ls -1 ';
+	
+	for (i = 0; i < type.length; i++) {
+		if (!where[type[i]]) {
+			ls += '/zones/*/cores/core.' + type[i] + '.* ';
+		} else {
+			ls += where[type[i]] + ' ';
+		}
+	}
 
 	var cmd = 'for d in `' + ls + ' 2> /dev/null`; do ' +
 	    'size=`ls -l $d | awk \'{ print $5 }\'` ; ' +
