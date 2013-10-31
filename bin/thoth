@@ -877,7 +877,7 @@ jobAllKeys = function (client, job, cb, opts)
 	var useindex = true;
 	var unindexing = opts && opts.unindexing;
 	var seenindex = false;
-	var unindexed = {};
+	var unindexed = {}, i;
 
 	if (thoth.mtime || !thoth.useindex ||
 	    (opts && opts.indexing) || (opts && !opts.indexed))
@@ -890,7 +890,7 @@ jobAllKeys = function (client, job, cb, opts)
 			return;
 		}
 
-		var info = JSON.parse(output), i;
+		var info = JSON.parse(output);
 
 		for (i = 0; i < info.length; i++) {
 			while (i < info.length && info[i].indexed &&
@@ -998,6 +998,17 @@ jobAllKeys = function (client, job, cb, opts)
 				again = false;
 				client.ls(thoth.path, lsopts, ondir);
 				return;
+			}
+
+			/*
+			 * We may have unindexed dumps that have updated
+			 * properties; this will result in duplicate entries,
+			 * so prune them out.
+			 */
+			for (i = 0; i < keys.length; i++) {
+				while (i < keys.length &&
+				    unindexed[mod_path.dirname(keys[i])])
+					keys.splice(i, 1);
 			}
 
 			client.addJobKey(id, keys, { end: true },
