@@ -299,8 +299,8 @@ Here's an analyzer that sets an ```fmri``` property to be that of the
     thoth_set fmri $fmri
     echo $THOTH_NAME: $fmri
 
-The output of analyzers is aggregated and displayed upon completion of
-```analyze```.  
+The output of analyzers is aggregated and displayed upon completion
+of ```analyze```.  
 
 #### Debugging analyzers
 
