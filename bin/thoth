@@ -1026,7 +1026,7 @@ jobAllKeys = function (client, job, cb, opts)
 	});
 };
 
-jobFromSpec = function (client, argv, opts, cb)
+jobFromSpec = function (client, argv, opts, cb, keys)
 {
 	/*
 	 * Our job is going to be to all information for all specified dumps.
@@ -1035,6 +1035,8 @@ jobFromSpec = function (client, argv, opts, cb)
 	var illegal = undefined;
 	var indexed = true;
 	var unindexed = {};
+	var scanarg = [];
+	var indexarg = [];
 	var i;
 
 	for (i = 0; i < argv.length; i++) {
@@ -1052,10 +1054,47 @@ jobFromSpec = function (client, argv, opts, cb)
 			continue;
 		}
 
-		cmd += ' | ';
+		if (!thoth.indexed[filter[0]]) {
+			scanarg.push(argv[i]);
+		} else {
+			indexarg.push(argv[i]);
+		}
+	}
+
+	if (scanarg.length != 0 && indexarg.length != 0) {
+		/*
+		 * We have arguments that are indexed, and some that aren't.
+		 * Instead of forcing a scan, we use the index to greatly
+		 * reduce the keys that we operate upon.
+		 */
+		argv = indexarg;
+
+		var func = cb;
+
+		cb = function (dumps) { 
+			var dump, keys = [];
+
+			for (dump in dumps) {
+				keys.push([ dumps[dump].name,
+				    'info.json' ].join('/'));
+			}
+
+			return (jobFromSpec(client, scanarg, opts,
+			    jobOutput(client, function (out)
+			    { func(JSON.parse(out)) }), keys));
+		};
+	}
+
+	for (i = 0; i < argv.length; i++) {
+		var filter = argv[i].split('=');
+
+		if (filter.length != 2)
+			fatal('dump specification must be "prop=val"');
 
 		if (!thoth.indexed[filter[0]])
 			indexed = false;
+
+		cmd += ' | ';
 
 		/*
 		 * More one-off grossness:  to allow for easy stack matching,
@@ -1144,7 +1183,12 @@ jobFromSpec = function (client, argv, opts, cb)
 		cb(keys);
 	}
 
-	jobAllKeys(client, job, postprocess, { indexed: indexed });
+	if (keys) {
+		jobOneKey(client, keys, cmd, cb, function (j) {
+		    j.phases.push(job.phases[1]); });
+	} else {
+		jobAllKeys(client, job, postprocess, { indexed: indexed });
+	}
 }
 
 processStack = function ()
@@ -1986,6 +2030,19 @@ var runAnalyzer = function (client, keys, analyzer)
 	});
 }
 
+var processAnalyzers = function (analyzers)
+{
+	var all = [], i;
+
+	for (analyzer in analyzers)
+		all.push(analyzers[analyzer].path);
+
+	all.sort();
+
+	for (i = 0; i < all.length; i++)
+		console.log(all[i]);
+};
+
 handlers.set = function (client, argv, sysprop)
 {
 	var i, val, prop, keys = [];
@@ -2132,13 +2189,62 @@ handlers.analyzer = function (client, argv)
 
 handlers.analyzers = function (client, argv)
 {
-	var analyzers = [], i;
+	var analyzers = {}, i;
+	var outstanding = 1;
+
+	var done = function () {
+		if (--outstanding > 0)
+			return;
+
+		processAnalyzers(analyzers);
+		process.exit(0);
+	};
+
+	var get = function (analyzer) {
+		var name = mod_path.basename(analyzer);
+
+		outstanding++;
+
+		analyzers[name] = { data: '', path: analyzer };
+
+		client.get(analyzer, function (err, stream, res) {
+			stream.on('data', function (data) {
+				analyzers[name].data += data;
+			});
+
+			stream.on('end', function () { done(); });
+		});
+	};
 
 	client.ls(thoth.analyzers, function (err, res) {
 		checkError(err);
 
 		res.on('object', function (obj) {
-			analyzers.push(thoth.analyzers + '/' + obj.name);
+			var analyzer = thoth.analyzers + '/' + obj.name;
+
+			if (obj.name.indexOf('.thoth.') == 0) {
+				var age = new Date().valueOf() -
+				    new Date(obj.mtime).valueOf();
+
+				if (age / 1000 < 3600)
+					return;
+
+				/*
+				 * This is a stale analyzer that has somehow
+				 * been left around; blow it away.
+				 */
+				warn('removing stale analyzer ' + obj.name);
+				outstanding++;
+
+				client.unlink(analyzer, function (err) {
+					checkError(err);
+					done();
+				});
+
+				return;
+			}
+
+			get(analyzer);
 		});
 
 		res.on('error', function (err) {
@@ -2146,14 +2252,7 @@ handlers.analyzers = function (client, argv)
 				process.exit(0);
 		});
 	
-		res.on('end', function () {
-			analyzers.sort();
-
-			for (i = 0; i < analyzers.length; i++)
-				console.log(analyzers[i]);
-
-			process.exit(0);
-		});
+		res.on('end', function () { done(); });
 	});
 };
 
