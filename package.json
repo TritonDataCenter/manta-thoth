@@ -1,5 +1,5 @@
 {
-	"name": "thoth",
+	"name": "manta-thoth",
 	"description": "Manta-based system for core and crash dump analysis",
 	"version": "0.1.0",
 	"author": "Joyent (joyent.com)",
