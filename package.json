@@ -1,8 +1,8 @@
 {
 	"name": "thoth",
-	"description": "Weigher of hearts, god of knowledge",
-	"private": true,
-	"version": "0.0.1",
+	"description": "Manta-based system for core and crash dump analysis",
+	"version": "0.1.0",
+	"author": "Joyent (joyent.com)",
 	"dependencies": {
 		"manta": "git://github.com/joyent/node-manta.git#master",
 		"ctype": ">=0.5.2",
@@ -13,5 +13,10 @@
 	},
 	"bin": {
 		"thoth": "bin/thoth"
-	}
+	},
+	"repository": {
+		"type" : "git",
+		"url" : "http://github.com/joyent/manta-thoth.git"
+	},
+	"engines": { "node": ">=0.8" }
 }
