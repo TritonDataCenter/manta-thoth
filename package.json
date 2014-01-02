@@ -1,7 +1,7 @@
 {
 	"name": "manta-thoth",
 	"description": "Manta-based system for core and crash dump analysis",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"author": "Joyent (joyent.com)",
 	"dependencies": {
 		"manta": "git://github.com/joyent/node-manta.git#master",
