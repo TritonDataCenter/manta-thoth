@@ -108,9 +108,9 @@ if [ ! -d $base ]; then
 	echo "Downloading thoth ..."
 	curl -k $MANTA_URL/thoth/public/thoth.tar.gz > $staged 2>&4
 	echo "Downloading thoth to compute nodes ..."
-	sdc-oneachnode -g $staged -d /var/tmp 1>&2
+	sdc-oneachnode -a -g $staged -d /var/tmp 1>&2
 	echo "Installing thoth on compute nodes ..."
-	sdc-oneachnode "cd / ; gzcat $tarball | tar xf - ; rm $tarball" 1>&2
+	sdc-oneachnode -a "cd / ; gzcat $tarball | tar xf - ; rm $tarball" 1>&2
 	rm $staged
 fi
 
@@ -178,7 +178,7 @@ cat > $runthoth <<EOF
 #
 source ~/.bashrc
 
-log=\`date +log/%m/%d/%H/%M/sdc-thoth.out\`
+log=\`date +log/%Y/%m/%d/%H/%M/sdc-thoth.out\`
 mkdir -p \$HOME/\`dirname \$log\`
 sdc-thoth --dry-run > \$log
 
@@ -201,6 +201,8 @@ cat $crontab | su thoth -c crontab
 #
 # We crank our window sizes to get maximum throughput on LFPs
 #
+ndd -set tcp_max_buf 2097152 || ipadm set-prop -t -p max_buf=2097152 tcp || \
+    echo "tcp_max_buf not present or could not be set"
 ndd -set /dev/tcp tcp_xmit_hiwat 2097152
 ndd -set /dev/tcp tcp_recv_hiwat 2097152
 EOF

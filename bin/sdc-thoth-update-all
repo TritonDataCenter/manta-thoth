@@ -69,9 +69,9 @@ staged=/tmp/thoth.$$.tar.gz
 echo "Downloading thoth ..."
 curl -k $MANTA_URL/thoth/public/thoth.tar.gz > $staged 2>&4
 echo "Downloading thoth to compute nodes ..."
-sdc-oneachnode -g $staged -d /var/tmp 1>&2
+sdc-oneachnode -a -g $staged -d /var/tmp 1>&2
 echo "Installing thoth on compute nodes ..."
-sdc-oneachnode "cd / ; gzcat $tarball | tar xf - ; rm $tarball" 1>&2
+sdc-oneachnode -a "cd / ; gzcat $tarball | tar xf - ; rm $tarball" 1>&2
 rm $staged
 echo "Done"
 
