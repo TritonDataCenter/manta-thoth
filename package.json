@@ -1,14 +1,15 @@
 {
 	"name": "manta-thoth",
 	"description": "Manta-based system for core and crash dump analysis",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"author": "Joyent (joyent.com)",
 	"dependencies": {
-		"manta": "git://github.com/joyent/node-manta.git#master",
+		"manta": "1.0.0",
 		"ctype": ">=0.5.2",
 		"sprintf": "0.1.1",
 		"bunyan": "0.21.3",
 		"restify": "2.5.0",
+		"rethinkdb": "2.0.0",
 		"readable-stream": ">=1.1.9"
 	},
 	"bin": {

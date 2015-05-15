@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /*
- * Copyright (c) 2013, Joyent, Inc. All rights reserved.
+ * Copyright (c) 2015, Joyent, Inc. All rights reserved.
  */
 
 var mod_ctype = require('ctype');
@@ -14,6 +14,7 @@ var mod_restify = require('restify');
 var mod_manta = require('manta');
 var mod_zlib = require('zlib');
 var mod_child = require('child_process');
+var mod_r = require('rethinkdb');
 
 var Readable = require('stream').Readable;
 var sprintf = require('sprintf').sprintf;
@@ -27,10 +28,19 @@ var thoth = {
 	    process.env.MANTA_USER) + '/stor/thoth',
 	analyzers: 'analyzers',
 	index: 'index.json',
+	config: 'config.json',
 	unindexed: '-unindexed.json',
 	logs: 'logs',
 	log: 'log',
 	verbose: true,
+	asset: 'thoth.tar.gz',
+	db: {
+		host: 'localhost',
+		port: 28015,
+		db: '',
+		authKey: 'bagnoogle',
+		table: 'dumps'
+	},
 	indexed: {
 		name: true,
 		time: true,
@@ -45,13 +55,13 @@ var thoth = {
 	cmds: [
 		{ token: 'upload', params: '[file]',
 		    usage: 'upload the specified core or crash dump' },
-		{ token: 'info', params: '[dump]',
+		{ token: 'info', params: '[dump]', disconnected: true,
 		    usage: 'print information about the specified dump(s)' },
-		{ token: 'ls', params: '[[dump]]',
+		{ token: 'ls', params: '[[dump]]', disconnected: true,
 		    usage: 'list dumps matching the specification' },
 		{ token: 'object', params: '[dump]', disconnected: true,
 		    usage: 'print object name for specified dump(s)' },
-		{ token: 'report', params: '[dump] [agg]',
+		{ token: 'report', params: '[dump] [agg]', disconnected: true,
 		    usage: 'report on dumps matching the specification' },
 		{ token: 'set', params: '[dump] [prop] [val]',
 		    usage: 'set prop to val for the specified dump(s)' },
@@ -72,7 +82,9 @@ var thoth = {
 		{ token: 'index',
 		    usage: 'generate (or regenerate) an index of all dumps' },
 		{ token: 'logs',
-		    usage: 'list logs for the past hour' }
+		    usage: 'list logs for the past hour' },
+		{ token: 'load', params: '[dump]', disconnected: true,
+		    usage: 'load metadata for the specified dump into cache' },
 	]
 };
 
@@ -145,6 +157,13 @@ var time2seconds = function (t)
 		return (n * s);
 
 	return (n * time2seconds(s));
+};
+
+var parseAge = function (t)
+{
+	var now = Math.floor((new Date()).valueOf() / 1000);
+
+	return (now - time2seconds(t));
 };
 
 /*
@@ -866,178 +885,76 @@ jobOneKey = function (client, key, cmd, cb, preflight)
 	});
 };
 
-jobAllKeys = function (client, job, cb, opts)
+jobSetThoth = function (job)
 {
-	var keys = [];
-	var now = new Date().valueOf();
-	var id, last = undefined;
-	var done = false;
-	var again = false;
-	var index = mod_path.basename(thoth.index);
-	var useindex = true;
-	var unindexing = opts && opts.unindexing;
-	var seenindex = false;
-	var unindexed = {}, i;
+	var phase = job.phases[0];
+	var asset = thoth.path + '/' + thoth.asset;
+	var config = '.thoth.' + thoth.config;
 
-	if (thoth.mtime || !thoth.useindex ||
-	    (opts && opts.indexing) || (opts && !opts.indexed))
-		useindex = false;
+	if (!phase.assets) 
+		phase.assets = [];
 
-	var scrub = function (output) {
-		if (output.length == 0 || (opts && opts.indexing) ||
-		    (opts && opts.unindexing)) {
-			cb([]);
-			return;
-		}
+	phase.assets.push(asset);
 
-		var info = JSON.parse(output);
+	phase.init = 'echo \'{"db": ' + JSON.stringify(thoth.db) + '}\' > ' +
+	    '~/' + config + '; tar xzf /assets/' + asset;
+}
 
-		for (i = 0; i < info.length; i++) {
-			while (i < info.length && info[i].indexed &&
-			    unindexed[info[i].name])
-				info.splice(i, 1);
-		}
-
-		cb(info);
-	};
-
-	var add = function (dir) {
-		again = true;
-
-		if (unindexing)
-			return;
-
-		keys.push([ thoth.path, dir.name, 'info.json' ].join('/'));
-	};
-
-	var lsopts = { query: { sort: 'mtime' } };
-
-	var ondir = function (err, res) {
-		checkError(err);
-
-		res.on('error', function (err) {
-			checkError(err);
-		});
-
-		res.on('object', function (obj) {
-			if (obj.mtime == lsopts.query.marker) {
-				if (seen[obj.name])
-					return;
-			}
-
-			if (last != obj.mtime) {
-				seen = {};
-				last = obj.mtime;
-			}
-
-			seen[obj.name] = true;
-			again = true;
-
-			if (useindex || unindexing) {
-				if (obj.name.match(thoth.unindexed + '$')) {
-					var k, n, key;
-
-					again = true;
-
-					if (unindexing && !seenindex)
-						return;
-
-					n = [ thoth.path, obj.name ].join('/');
-					k = n.substr(0,
-					    n.indexOf(thoth.unindexed));
-
-					if (!unindexed[k]) {
-						keys.push(n);
-						unindexed[k] = true;
-					}
-				}
-
-				if (obj.name == index) {
-					if (unindexing) {
-						seenindex = true;
-						return;
-					}
-
-					keys.push(thoth.index);
-					done = true;
-				}
-			}
-		});
-
-		res.on('directory', function (dir) {
-			if (dir.mtime == lsopts.query.marker) {
-				if (seen[dir.name])
-					return;
-			}
-
-			if (done)
-				return;
-
-			var age = (now - new Date(dir.mtime).valueOf()) / 1000;
-
-			if (thoth.mtime && age > thoth.mtime) {
-				done = true;
-				status('older dumps exist; set "mtime" to ' +
-				    'a higher value to process');
-				return;
-			}
-
-			if (last != dir.mtime) {
-				seen = {};
-				last = dir.mtime;
-			}
-
-			seen[dir.name] = true;
-			add(dir);
-		});
-
-		res.on('end', function () {
-			if (!done && again) {
-				lastlen = keys.length;
-				lsopts.query.marker = last;
-				again = false;
-				client.ls(thoth.path, lsopts, ondir);
-				return;
-			}
-
-			/*
-			 * We may have unindexed dumps that have updated
-			 * properties; this will result in duplicate entries,
-			 * so prune them out.
-			 */
-			for (i = 0; i < keys.length; i++) {
-				while (i < keys.length &&
-				    unindexed[mod_path.dirname(keys[i])])
-					keys.splice(i, 1);
-			}
-
-			client.addJobKey(id, keys, { end: true },
-			    function (err) {
-				checkError(err);
-				jobWait(client, id, jobOutput(client, scrub));
-			});
-		});
-	};
-
-	client.createJob(job, function (err, jobid) {
-		checkError(err);
-		status('created job ' + (id = jobid));
-		client.ls(thoth.path, lsopts, ondir);
-	});
-};
-
-jobFromSpec = function (client, argv, opts, cb, keys)
+jobExecThoth = function (what)
 {
-	/*
-	 * Our job is going to be to all information for all specified dumps.
-	 */
-	var cmd = 'cat $MANTA_INPUT_FILE ';
-	var illegal = undefined;
-	var indexed = true;
-	var unindexed = {};
-	var scanarg = [];
-	var indexarg = [];
+	return ('/opt/custom/thoth/node_modules/manta-thoth/bin/thoth ' +
+	   'load ' + what);
+}
+
+dumpsFromSpec = function (argv, opts, cb)
+{
 	var i;
+	var illegal = undefined;
+	var filters = [], time = undefined, undefs = [];
+
+	var deref = function (dump, field) {
+		var f = field.split('.'), rval = dump;
+
+		while (f.length > 0)
+			rval = rval(f.shift());
+
+		return (rval);
+	};
+
+	var exfilter = function (arg) {
+		var p = field.split('properties.');
+
+		if (p.length == 2) {
+			return (function (dump) {
+				return (dump('properties')
+				    (p[1]).hasFields(arg));
+			});
+		}
+
+		return (function (dump) { return (dump.hasFields(arg)); });
+	};
+
+	var eqfilter = function (field, match) {
+		return (function (dump) {
+			return (deref(dump, field).eq(match));
+		});
+	};
+
+	var matchfilter = function (field, match) {
+		return (function (dump) {
+			return (deref(dump, field).match(match));
+		});
+	};
+
+	var framematch = function (match) {
+		return (function (frame) { return frame.match(match); });
+	};
+
+	var stackfilter = function (func) {
+		return (function (dump) {
+			return (dump('stack').contains(func));
+		});
+	};
 
 	for (i = 0; i < argv.length; i++) {
 		var filter = argv[i].split('=');
@@ -1045,67 +962,10 @@ jobFromSpec = function (client, argv, opts, cb, keys)
 		if (filter.length != 2)
 			fatal('dump specification must be "prop=val"');
 
-		/*
-		 * mtime is a special property in that we use it to filter
-		 * client-side.
-		 */
-		if (filter[0] == 'mtime') {
-			thoth.mtime = time2seconds(filter[1]);
+		if ((filter[0] == 'time') || (filter[0] == 'mtime')) {
+			time = parseAge(filter[1]);
 			continue;
 		}
-
-		if (!thoth.indexed[filter[0]]) {
-			scanarg.push(argv[i]);
-		} else {
-			indexarg.push(argv[i]);
-		}
-	}
-
-	if (scanarg.length != 0 && indexarg.length != 0) {
-		/*
-		 * We have arguments that are indexed, and some that aren't.
-		 * Instead of forcing a scan, we use the index to greatly
-		 * reduce the keys that we operate upon.
-		 */
-		argv = indexarg;
-
-		var func = cb;
-
-		cb = function (dumps) { 
-			var dump, keys = [];
-
-			for (dump in dumps) {
-				keys.push([ dumps[dump].name,
-				    'info.json' ].join('/'));
-			}
-
-			return (jobFromSpec(client, scanarg, opts,
-			    jobOutput(client, function (out)
-			    { func(JSON.parse(out)) }), keys));
-		};
-	}
-
-	for (i = 0; i < argv.length; i++) {
-		var filter = argv[i].split('=');
-
-		if (filter.length != 2)
-			fatal('dump specification must be "prop=val"');
-
-		if (!thoth.indexed[filter[0]])
-			indexed = false;
-
-		if (filter[0] == 'mtime')
-			continue;
-
-		cmd += ' | ';
-
-		/*
-		 * More one-off grossness:  to allow for easy stack matching,
-		 * we always flatten the stack and delimit the frames with
-		 * colons.
-		 */
-		if (filter[0] == 'stack')
-			filter[0] = 'stack.join(":")';
 
 		/*
 		 * This is one million percent ghetto, but if we see a '*',
@@ -1117,19 +977,27 @@ jobFromSpec = function (client, argv, opts, cb, keys)
 			if (illegal)
 				break;
 
-			cmd += 'json -gc \'this.' + filter[0] + ' && this.' +
-			    filter[0] + '.match(/^' +
-			    filter[1].replace(/\*/g, '(.|\\n)*') + '$/)\'';
+			var re = '^' +
+			    filter[1].replace(/\*/g, '(.|\\n)*') + '$';
+
+			if (filter[0] == 'stack') {
+				filters.push(stackfilter(framematch(re)));
+			} else {
+				filters.push(matchfilter(filter[0], re));
+			}
 		} else if (filter[1] == 'undefined') {
-			cmd += 'json -gc \'!this.' + filter[0] + '\'';
+			undefs.push(filter[0]);
 		} else {
 			illegal = filter[1].match(/["']/);
 
 			if (illegal)
 				break;
 
-			cmd += 'json -gc \'this.' + filter[0] + '=="' +
-			    filter[1] + '"\'';
+			if (filter[0] == 'stack') {
+				filters.push(stackfilter(filter[1]));
+			} else {
+				filters.push(eqfilter(filter[0], filter[1]));
+			}
 		}
 	}
 
@@ -1139,59 +1007,72 @@ jobFromSpec = function (client, argv, opts, cb, keys)
 		    '\' at index ' + illegal.index);
 	}
 
-	if (opts.fields) {
-		for (i = 0; i < opts.fields.length; i++) {
-			if (!thoth.indexed[opts.fields[i]])
-				indexed = false;
+	mod_r.connect(thoth.db, function (err, conn) {
+		if (err) {
+			fatal('couldn\'t connect to database: ' +
+			    err.message);
 		}
 
-		cmd += '| json -gAc this.length';
+		var rval = mod_r.table('dumps');
 
-		if (indexed) {
-			/*
-			 * This is entirely indexed; if we're operating on
-			 * the index, we just want to pass it through.
-			 */
-			cmd = 'if [[ `basename $MANTA_INPUT_FILE` == "' +
-			    mod_path.basename(thoth.index) + '" ]]; then ' +
-			    cmd + '; else ' + cmd;
+		if (time) {
+			rval = rval.between(time,
+			    (new Date()).valueOf() / 1000,
+			    { index: 'time', leftBound: 'open' });
 		}
 
-		cmd += ' | json -ja name indexed ';
+		for (i = 0; i < filters.length; i++)
+			rval = rval.filter(filters[i]);
 
-		/*
-		 * We always output the 'name' and 'indexed' fields.
-		 */
-		for (i = 0; i < opts.fields.length; i++) {
-			cmd += opts.fields[i] + ' ';
+		for (i = 0; i < undefs.length; i++) {
+			var f = {};
+			f[undefs[i]] = null;
+			rval = rval.filter(f, { default: true });
+		}
+			
+		if (opts.fields) {
+			if (opts.group) {
+				if (opts.fields.length != 1)
+					fatal('can only group on one field');
+
+				var f = opts.fields[0];
+
+				if (f instanceof Object) {
+					rval = rval.group(function (d) {
+						return (d.pluck(f));
+					}).count();
+				} else {
+					rval = rval.group(f).count();
+				}
+			} else {
+				rval = rval.pluck(opts.fields);
+			}
 		}
 
-		if (indexed)
-			cmd += '; fi';
-	} else {
-		cmd += '| json -gAc this.length';
-		indexed = false;
-	}
+		rval.run(conn, function (err, cursor) {
+			if (err)
+				fatal('couldn\'t query dumps: ' + err.message);
 
-	job = { phases: [ { exec: cmd, type: 'map' },
-	    { exec: 'json -g', type: 'reduce' } ] };
+			if (opts.group) {
+				cursor.sort(function (l, r) {
+					if (l.reduction < r.reduction) {
+						return (-1);
+					} else if (l.reduction == r.reduction) {
+						return (0);
+					} else {
+						return (1);
+					}
+				});
 
-	var postprocess = function (keys) {
-		if (keys.length == 0) {
-			warn('dump specification does not match any dumps');
-			process.exit(1);
-			return;
-		}
+				cb(cursor);
+				return;
+			}
 
-		cb(keys);
-	}
-
-	if (keys) {
-		jobOneKey(client, keys, cmd, cb, function (j) {
-		    j.phases.push(job.phases[1]); });
-	} else {
-		jobAllKeys(client, job, postprocess, { indexed: indexed });
-	}
+			cursor.toArray(function (err, results) {
+				cb(results);
+			});
+		});
+	});
 }
 
 processStack = function ()
@@ -1488,6 +1369,11 @@ var infoGet = function (client, dump, cb)
 	argToInfo(client, dump, function (object, err, stream, res) {
 		checkError(err);
 
+		if (!stream) {
+			cb(object);
+			return;
+		}
+
 		var output = '';
 
 		stream.on('data', function (data) {
@@ -1527,12 +1413,10 @@ handlers.upload = function (client, argv)
 
 handlers.ls = function (client, argv)
 {
-	status('creating job to list');
-
 	var fmt = '%-16s %-5s %-19s %-16s %s';
 	var fields = [ 'name', 'time', 'type', 'cmd', 'node', 'ticket' ];
 
-	jobFromSpec(client, argv, { fields: fields }, function (dumps) {
+	dumpsFromSpec(argv, { fields: fields }, function (dumps) {
 		console.log(sprintf(fmt,
 		    'DUMP', 'TYPE', 'TIME', 'NODE/CMD', 'TICKET'));
 
@@ -1569,27 +1453,65 @@ handlers.info = function (client, argv)
 		process.exit(0);
 	};
 
-	var info = function (dumps) {
-		var dump, keys = [];
-
-		for (dump in dumps)
-			keys.push([ dumps[dump].name, 'info.json' ].join('/'));
-
-		var preflight = function (job) {
-			job.phases.push({ exec: 'json -g', type: 'reduce' });
-		};
-
-		jobOneKey(client, keys, 'cat $MANTA_INPUT_FILE | json',
-		    jobOutput(client, function (out)
-		    { output(JSON.parse(out)); }),
-		    preflight);
-	};
-
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], output);
 	} else {
-		jobFromSpec(client, argv, { fields: [ 'name' ] }, info);
+		dumpsFromSpec(argv, {}, output);
 	}
+}
+
+handlers.load = function (client, argv)
+{
+	var id;
+	var info;
+
+	var load = function (info) {
+		info.id = id = info.name.split('/').pop();
+
+		mod_r.connect(thoth.db, function (err, conn) {
+			if (err) {
+				fatal('couldn\'t connect to database: ' +
+				    err.message);
+			}
+
+			mod_r.table('dumps').insert(info,
+			    { conflict: 'replace' }).run(conn, done);
+		});
+	};
+
+	var done = function (err, results) {
+		if (!err) {
+			console.log(results);
+			process.exit(0);
+		}
+
+		fatal('couldn\'t insert ' + id + ': ' + err.message);
+	};
+
+	if (argv.length != 1)
+		fatal('need a dump specification to load');
+
+	/*
+	 * First, try to load this as a file...
+	 */
+	try {
+		load(JSON.parse(mod_fs.readFileSync(argv[0])));
+		return;
+	} catch	(err) {
+		if (err.code != 'ENOENT')
+			fatal('couldn\'t parse ' + argv[0] + ': ' + err);
+	}
+
+  	/*
+	 * That failed; we'll now connect to Manta and assume that this is a
+	 * fully specified dump.
+	 */
+	client = connect();
+
+	if (argv[0].indexOf('=') != -1 || argv[0].length < thoth.hashlen)
+		fatal('need a fully specified dump to load');
+
+	infoGet(client, argv[0], load);
 }
 
 handlers.debug = function (client, argv)
@@ -1653,6 +1575,10 @@ handlers.debug = function (client, argv)
 
 		var args = [ dump.dump ];
 
+		var dummy = { phases: [ {} ] };
+		jobSetThoth(dummy);
+		cmd += dummy.phases[0].init + '\n';
+
 		if (analyzer) {
 			cmd += analyzerCmd(args);
 		} else {
@@ -1661,6 +1587,7 @@ handlers.debug = function (client, argv)
 
 		setAnalyzer(client, cmd, function (asset) { 	
 			args = args.concat([ '-s', asset,
+			    '-s', dummy.phases[0].assets[0],
 			    '-c', '/assets/' + asset ]);
 
 			var child = mod_child.spawn(mlogin, args,
@@ -1683,45 +1610,143 @@ handlers.debug = function (client, argv)
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], debug);
 	} else {
-		jobFromSpec(client, argv, { fields: [ 'dump' ] }, debug);
+		dumpsFromSpec(argv, { fields: [ 'dump' ] }, debug);
 	}
 }
 
 handlers.index = function (client, argv)
 {
-	var f;
-	var cmd = 'cat $MANTA_INPUT_FILE | json -ge \'this.indexed=true\' | ';
-	cmd += 'json -ja indexed ';
+	var again = false, done = false, time = undefined;
+	var id;
+	var keys = [];
+	var nprocessed = 0;
 
-	for (f in thoth.indexed)
-		cmd += f + ' ';
+	var add = function (what) {
+		again = true;
+		keys.push([ thoth.path, what ].join('/'));
+	};
 
-	var reduce = 'json -g > /var/tmp/out ; '
-	reduce += 'mput -f /var/tmp/out ' + thoth.index;
+	var job = { phases: [ {
+		type: 'map',
+		exec: jobExecThoth('$MANTA_INPUT_FILE')
+	} ] };
 
-	var job = { phases: [
-		{ exec:  cmd, type: 'map' },
-		{ exec:  reduce, type: 'reduce' }
-	] };
+	jobAddThoth(job);
 
-	status('indexing all dumps');
+	var lsopts = { query: { sort: 'mtime' } };
+	var seen = {};
+	var last = undefined;
 
-	jobAllKeys(client, job, function (output) {
-		/*
-		 * If that completed successfuly, we want to take another pass
-		 * over our directory, blowing away any unindexed objects that
-		 * are older than our index.
-		 */
-		job = { phases: [
-			{ exec: 'mrm $MANTA_INPUT_OBJECT', type: 'map' }
-		] };
+	for (i = 0; i < argv.length; i++) {
+		var filter = argv[i].split('=');
 
-		status('removing formerly unindexed objects');
+		if (filter.length != 2 || filter[0] != 'mtime' || i != 0)
+			fatal('index specification must be "mtime=age"');
 
-		jobAllKeys(client, job, function (output) {
-			process.exit(0);
-		}, { unindexing: true });
-	}, { indexing: true });
+		time = parseAge(filter[1]);
+	}
+
+	if (time) {
+		status('indexing dumps since ' +
+		    (new Date(time * 1000)).toISOString());
+	} else {
+		status('indexing all dumps');
+	}
+
+	var processed = function (obj) {
+		if (done)
+			return (true);
+
+		if (time && (new Date(obj.mtime).valueOf() / 1000) < time) {
+			done = true;
+			return (true);
+		}
+
+		if (obj.mtime == lsopts.query.marker) {
+			if (seen[obj.name])
+				return (true);
+		}
+
+		if (last != obj.mtime) {
+			seen = {};
+			last = obj.mtime;
+		}
+
+		seen[obj.name] = true;
+		again = true;
+		nprocessed++;
+ 
+		return (false);
+	};
+
+	var ondir = function (err, res) {
+		checkError(err);
+
+		res.on('error', function (err) {
+			checkError(err);
+		});
+
+		res.on('object', function (obj) {
+			if (processed(obj))
+				return;
+
+			if (!obj.name.match(thoth.unindexed + '$'))
+				return;
+
+			add(obj.name);
+		});
+
+		res.on('directory', function (dir) {
+			if (processed(dir))
+				return;
+
+			if (dir.name.length != thoth.hashlen)
+				return;
+
+			add(dir.name + '/info.json');
+		});
+
+		res.on('end', function () {
+			if (!done && again) {
+				again = false;
+				lsopts.query.marker = last;
+				client.addJobKey(id, keys, function (err) {
+					checkError(err);
+					keys = [];
+					client.ls(thoth.path, lsopts, ondir);
+				});
+				return;
+			}
+
+			client.addJobKey(id, keys, { end: true },
+			    function (err) {
+				checkError(err);
+				jobWait(client, id, jobOutput(client, alldone));
+			});
+		});
+	};
+
+	/*
+	 * Before we create a job, make sure that we can connect to the
+	 * database.
+	 */
+	mod_r.connect(thoth.db, function (err, conn) {
+		if (err) {
+			fatal('couldn\'t connect to database: ' +
+			    err.message);
+		}
+
+		client.createJob(job, function (err, jobid) {
+			checkError(err);
+			status('created job ' + (id = jobid));
+			client.ls(thoth.path, lsopts, ondir);
+		});
+	});
+
+	var alldone = function () {
+		status('indexed ' + nprocessed + ' dumps');
+		process.exit(0);
+	};
 }
 
 handlers.object = function (client, argv)
@@ -1735,23 +1760,45 @@ handlers.object = function (client, argv)
 handlers.report = function (client, argv)
 {
 	var fields = [ argv.pop() ];
+	var nested;
 
 	if (!fields[0])
 		fatal('must supply an aggregation property');
 
-	jobFromSpec(client, argv, { fields: fields }, function (dumps) {
-		var i, output = {}, val;
+	nested = fields[0].split('.');
+
+	if (nested.length > 1) {
+		var i = nested.length - 1;
+		var val = true;
+	
+		while (i >= 0) {
+			var o = new Object();
+			o[nested[i--]] = val;
+			val = o;
+		}
+
+		fields = [ val ];
+	}
+
+	dumpsFromSpec(argv, { fields: fields, group: true }, function (dumps) {
+		var i, j, output = {}, val;
 
 		for (i = 0; i < dumps.length; i++) {
-			if (!dumps[i].hasOwnProperty(fields[0]))
-				continue;
+			group = dumps[i].group;
 
-			val = dumps[i][fields[0]];
+			if (nested.length > 1) {
+				for (j = 0; j < nested.length; j++) {
+					if (!group.hasOwnProperty(nested[j]))
+						break;
 
-			if (!output[val])
-				output[val] = 0;
+					group = group[nested[j]];
+				}
 
-			output[val]++;
+				if (j < nested.length)
+					continue;
+			}
+
+			output[group] = dumps[i].reduction;
 		}
 
 		console.log(JSON.stringify(output, null, 4));
@@ -1782,8 +1829,10 @@ var setProp = function (client, keys, prop, val, sysprop)
 	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;'; 
 	cmd += 'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
 	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
+	cmd += '; ' + jobExecThoth(json);
  
-	jobOneKey(client, keys, cmd, function () { process.exit(0) });
+	jobOneKey(client, keys, cmd,
+	    function () { process.exit(0) }, jobSetThoth);
 }
 
 var unsetProp = function (client, keys, prop, sysprop)
@@ -1795,48 +1844,55 @@ var unsetProp = function (client, keys, prop, sysprop)
 	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;'; 
 	cmd += 'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
 	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
+	cmd += '; ' + jobExecThoth(json);
 
-	jobOneKey(client, keys, cmd, function () { process.exit(0) });
+	jobOneKey(client, keys, cmd,
+	    function () { process.exit(0) }, jobSetThoth);
 }
 
-var partialArgToInfo = function(client, arg, cb, opts)
+var partialArgToInfo = function (arg, cb, errcb)
 {
-	var last = undefined;
-	var done = false;
-
-	if (!opts)
-		opts = { query: { sort: 'mtime' } };
-
-	client.ls(thoth.path, opts, function (err, res) {
-		checkError(err);
-
-		res.on('directory', function (obj) {
-			if (opts.query && obj.mtime == opts.query.marker)
+	mod_r.connect(thoth.db, function (err, conn) {
+		if (err) {
+			if (errcb) {
+				errcb(err);
 				return;
-
-			last = obj.mtime;
-
-			if (obj.name.indexOf(arg) == -1)
-				return;
-
-			argToInfo(client, obj.name, cb);
-			done = true;
-		});
-
-		res.on('end', function () {
-			if (last && !done) {
-				opts.query.marker = last;
-
-				return (partialArgToInfo(client,
-				    arg, cb, opts));
 			}
 
-			if (!done) {
-				fatal('\'' + arg + '\' doesn\'t ' +
-				    'match any dump');
+			fatal('couldn\'t connect to database: ' + err.message);
+		}
+
+		mod_r.table(thoth.db.table).between(arg, arg + 'z').run(conn,
+		    function (err, cursor) {
+			if (err) {
+				fatal('couldn\'t query ' + arg + ': ' +
+				    err.message);
 			}
 
-			return;
+			cursor.toArray(function (err, results) {
+				if (results.length == 1) {
+					cb(results[0]);
+					return;
+				}
+
+				if (results.length > 1) {
+					var i, res = [];
+
+					for (i = 0; i < results.length; i++)
+						res.push(results[i].id);
+
+					fatal('"' + arg + '" matches more ' +
+					    'than one dump: ' +
+					    res.join(', '));
+				}
+
+				if (errcb) {
+					errcb();
+					return;
+				}
+
+				fatal(arg + ' does not match any dumps');
+			});
 		});
 	});
 }
@@ -1845,31 +1901,51 @@ var argToInfo = function (client, arg, cb)
 {
 	var object = [ thoth.path, arg, 'info.json' ].join('/');
 
-	client.get(object, function (err, stream, res) {
-		if (err && err.code == 'ResourceNotFound') {
-			openDump(arg, function (file) { 
-				argToInfo(client, file.digest, cb);
-				return;
-			}, function () {
-				if (arg.length < thoth.hashlen) {
-					partialArgToInfo(client, arg, cb);
-					return;
-				}
-
-				/*
-				 * Our info doesn't exist and it doesn't
-				 * correspond to a file on the local file
-				 * system; to allow callers to differentiate
-				 * between this case and any other error, we
-				 * return with a special exit code (2).
-				 */
-				fatal(err.toString(), 2);
-			});
+	var trylocal = function (err) {
+		openDump(arg, function (file) { 
+			argToInfo(client, file.digest, cb);
 			return;
-		}
+		}, function () {
+			/*
+			 * Our info doesn't exist and it doesn't
+			 * correspond to a file on the local file
+			 * system; to allow callers to differentiate
+			 * between this case and any other error, we
+			 * return with a special exit code (2).
+			 */
+			fatal(err.toString(), 2);
+		});
+	};
 
-		cb(object, err, stream, res);
-	});
+	var tryManta = function (err) {
+		if (!client)
+			client = connect();
+
+		client.get(object, function (err, stream, res) {
+			if (err && err.code == 'ResourceNotFound') {
+				/*
+				 * If we didn't find it in Manta, try to find
+				 * it locally.
+				 */
+				trylocal(err);
+				return;
+			}
+			
+			checkError(err);
+
+			cb(object, err, stream, res);
+		});
+	};
+
+	/*
+	 * First, hit the database.  If that fails, try Manta...
+	 */
+	partialArgToInfo(arg, cb, tryManta);
+}
+
+var dumpToInfoPath = function (dump)
+{
+	return ([ dump.name, 'info.json'].join('/'));
 }
 
 var setAnalyzer = function (client, exec, cb)
@@ -1916,6 +1992,7 @@ var setAnalyzer = function (client, exec, cb)
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
 	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	' + jobExecThoth('$propout') + '\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_unset()\n';
@@ -1929,6 +2006,7 @@ var setAnalyzer = function (client, exec, cb)
 	cmd += '"this.properties.$1=undefined" > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
 	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	' + jobExecThoth('$propout') + '\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_ticket()\n';
@@ -1944,6 +2022,7 @@ var setAnalyzer = function (client, exec, cb)
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
 	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	' + jobExecThoth('$propout') + '\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_unticket()\n';
@@ -1954,6 +2033,7 @@ var setAnalyzer = function (client, exec, cb)
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
 	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	' + jobExecThoth('$propout') + '\n';
 	cmd += '}\n\n';
 
 	var asset = thoth.analyzers + '/.thoth.' + process.pid + '.' +
@@ -2021,6 +2101,7 @@ var runAnalyzer = function (client, keys, analyzer)
 		var preflight = function (job) {
 			job.phases[0].assets = [ asset, analyzer ];
 			job.phases.push({ exec: 'cat', type: 'reduce' });
+			jobSetThoth(job);
 		};
 
 		var done = function (output) {
@@ -2073,7 +2154,9 @@ handlers.set = function (client, argv, sysprop)
 	}
 
 	if (argv[0].indexOf('=') == -1) {
-		argToInfo(client, argv[0], function (path) {
+		argToInfo(client, argv[0], function (dump) {
+			var path = dumpToInfoPath(dump);
+
 			if (argv.length < 2)
 				fatal('expected property to set');
 
@@ -2101,7 +2184,7 @@ handlers.set = function (client, argv, sysprop)
 	if (i < argv.length)
 		argv.pop();
 
-	jobFromSpec(client, argv, { fields: [ 'name' ] }, function (dumps) {
+	dumpsFromSpec(argv, { fields: [ 'name' ] }, function (dumps) {
 		for (dump in dumps)
 			keys.push([ dumps[dump].name, 'info.json' ].join('/'));
 
@@ -2118,14 +2201,15 @@ handlers.unset = function (client, argv, sysprop)
 		fatal('expected a property to unset');
 
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
-		argToInfo(client, argv[0], function (path) {
+		argToInfo(client, argv[0], function (dump) {
+			var path = dumpToInfoPath(dump);
 			unsetProp(client, [ path ], prop, sysprop);
 		});
 
 		return;
 	}
 
-	jobFromSpec(client, argv, { fields: [ 'name' ] }, function (dumps) {
+	dumpsFromSpec(argv, { fields: [ 'name' ] }, function (dumps) {
 		for (dump in dumps)
 			keys.push([ dumps[dump].name, 'info.json' ].join('/'));
 
@@ -2214,6 +2298,8 @@ handlers.analyzers = function (client, argv)
 		analyzers[name] = { data: '', path: analyzer };
 
 		client.get(analyzer, function (err, stream, res) {
+			checkError(err);
+
 			stream.on('data', function (data) {
 				analyzers[name].data += data;
 			});
@@ -2277,7 +2363,7 @@ handlers.analyze = function (client, argv)
 		return;
 	}
 
-	jobFromSpec(client, argv, { fields: [ 'dump' ] }, function (dumps) {
+	dumpsFromSpec(argv, { fields: [ 'dump' ] }, function (dumps) {
 		var dump, keys = [];
 
 		for (dump in dumps)
@@ -2373,10 +2459,84 @@ var connect = function()
 	return (mod_manta.createBinClient(opts));
 }
 
+var configure = function(cb)
+{
+	var k;
+	var conf = false;
+	var file = process.env.HOME + '/.thoth.' + thoth.config;
+	var object = thoth.path + '/' + thoth.config;
+	var client = undefined;
+
+	thoth.db.db = thoth.path.split('/')[1];
+
+	/*
+	 * First, look for environment variables.
+	 */
+	for (k in thoth.db) {
+		var env = 'THOTH_DB_' + k.toUpperCase();
+
+		if (process.env[env]) {
+			conf = true;
+			thoth.db[k] = process.env[env];
+		}
+	}
+
+	if (conf)
+		return (cb(client, 'from environment'));
+
+	var parseconf = function (data, where) {
+		if (!data.db)
+			fatal('expected \'db\' member in ' + file);
+
+		for (k in data.db) {
+			if (!thoth.db.hasOwnProperty(k)) {
+				fatal('unexpected property \'' + k +
+				     '\' in ' + file);
+			}
+
+			thoth.db[k] = data.db[k];
+		}
+
+		return (cb(client, where));
+	};
+
+	/*
+	 * Next, look for a configuration file in our home directory.
+	 */
+	try {
+		parseconf(JSON.parse(mod_fs.readFileSync(file)), 'locally');
+		return;
+	} catch (err) {
+		if (err.code != 'ENOENT')
+			fatal('couldn\'t open/parse ' + file + ': ' + err);
+	}
+
+	/*
+	 * Finally, pull our configuration from thoth itself.
+	 */
+	client = connect();
+
+	client.get(object, function (err, stream, res) {
+		if (err && err.code == 'ResourceNotFound')
+			return (cb(client, 'from source'));
+
+		var output = '';
+
+		stream.on('data', function (data) {
+			output += data;
+		});
+
+		stream.on('end', function () {
+			parseconf(JSON.parse(output), 'from Manta');
+		});
+	});
+}
+
 var main = function()
 {
 	var i, argv = process.argv;
 	var client = undefined;
+	var conf = false;
 
 	if (argv.length < 3)
 		usage('expected command');
@@ -2385,21 +2545,30 @@ var main = function()
 	thoth.logs = thoth.path + '/' + thoth.logs;
 	thoth.index = thoth.path + '/' + thoth.index;
 
-	for (i = 0; i < thoth.cmds.length; i++) {
-		if (argv[2] != thoth.cmds[i].token)
-			continue;
+	configure(function (client, src) {
+		if (thoth.db.authKey == 'none')
+			delete thoth.db.authKey;
 
-		argv = argv.slice(3, argv.length);
+		status('using database at ' +
+		    thoth.db.host + ':' + thoth.db.port +
+		    ' (configured ' + src + ')');
 
-		if (!thoth.cmds[i].disconnected)
-			client = connect();
+		for (i = 0; i < thoth.cmds.length; i++) {
+			if (argv[2] != thoth.cmds[i].token)
+				continue;
 
-		handlers[thoth.cmds[i].token].call(this, client, argv);
-		break;
-	}
+			argv = argv.slice(3, argv.length);
 
-	if (i == thoth.cmds.length)
-		usage('unrecognized command "' + argv[2] + '"');
+			if (!client && !thoth.cmds[i].disconnected)
+				client = connect();
+
+			handlers[thoth.cmds[i].token].call(this, client, argv);
+			break;
+		}
+
+		if (i == thoth.cmds.length)
+			usage('unrecognized command "' + argv[2] + '"');
+	});
 };
 
 main();
