@@ -81,6 +81,8 @@ var thoth = {
 		    usage: 'debug the specified dump via mlogin and mdb' },
 		{ token: 'index',
 		    usage: 'generate (or regenerate) an index of all dumps' },
+		{ token: 'clean',
+		    usage: 'clean index artifacts' },
 		{ token: 'logs',
 		    usage: 'list logs for the past hour' },
 		{ token: 'load', params: '[dump]', disconnected: true,
@@ -1617,7 +1619,7 @@ handlers.debug = function (client, argv)
 handlers.index = function (client, argv)
 {
 	var again = false, done = false, time = undefined;
-	var id;
+	var id, time;
 	var keys = [];
 	var nprocessed = 0;
 
@@ -1628,10 +1630,11 @@ handlers.index = function (client, argv)
 
 	var job = { phases: [ {
 		type: 'map',
-		exec: jobExecThoth('$MANTA_INPUT_FILE')
+		exec: 'DTRACE_DOF_INIT_DISABLE=1 ' +
+		    jobExecThoth('$MANTA_INPUT_FILE')
 	} ] };
 
-	jobAddThoth(job);
+	jobSetThoth(job);
 
 	var lsopts = { query: { sort: 'mtime' } };
 	var seen = {};
@@ -1749,6 +1752,118 @@ handlers.index = function (client, argv)
 	};
 }
 
+handlers.clean = function (client, argv)
+{
+	var again = false, done = false, time = undefined;
+	var lsopts = { query: { sort: 'mtime' }, limit: 1000 };
+	var seen = {};
+	var last = undefined, oldest;
+	var id, time;
+	var keys = [];
+	var nprocessed = 0, total = 0;
+	var parallelism = 10, outstanding = 0;
+
+	if (argv.length != 1)
+		fatal('expected age at which to start cleaning');
+
+	var filter = argv[0].split('=');
+
+	if (filter.length != 2 || filter[0] != 'mtime')
+		fatal('age must be specified as "mtime=age"');
+
+	time = parseAge(filter[1]);
+
+	status('cleaning artifacts from before ' +
+	    (new Date(time * 1000)).toISOString());
+
+	var unlink = function (cb) {
+		do {
+			if (keys.length == 0) {
+				if (nprocessed) {
+					status('cleaned ' + nprocessed +
+					    ' artifacts ending with ' +
+					    oldest.name + ' at ' +
+					    oldest.mtime);
+					total += nprocessed;
+					nprocessed = 0;
+				}
+
+				cb();
+				return;
+			}
+
+			outstanding++;
+
+			client.unlink(thoth.path + '/' + keys.shift(),
+			    function (err) {
+				outstanding--;
+				checkError(err);
+				nprocessed++;
+				if (outstanding == 0)
+					unlink(cb);
+			});
+		} while (outstanding < parallelism);
+	};
+
+	var ondir = function (err, res) {
+		checkError(err);
+
+		res.on('error', function (err) {
+			checkError(err);
+		});
+
+	 	res.on('object', function (obj) {
+			if (obj.mtime == lsopts.query.marker) {
+				if (seen[obj.name])
+					return;
+			}
+
+			if (last != obj.mtime) {
+				seen = {};
+				last = obj.mtime;
+			}
+
+			seen[obj.name] = true;
+			again = true;
+
+			if ((new Date(obj.mtime).valueOf() / 1000) > time)
+				return;
+
+			if (!obj.name.match(thoth.unindexed + '$'))
+				return;
+
+			oldest = { mtime: obj.mtime, name: obj.name };
+			keys.push(obj.name);
+		});
+
+		res.on('directory', function (dir) {
+			if (last != dir.mtime) {
+				seen = {};
+				last = dir.mtime;
+			}
+
+			again = true;
+		});
+
+		res.on('end', function () {
+			unlink(function () {
+				if (!again) {
+					status('cleaned ' + total +
+					     ' indexing artifacts');
+					process.exit(0);
+					return;
+				}
+
+				again = false;
+				lsopts.query.marker = last;
+				client.ls(thoth.path, lsopts, ondir);
+			});
+		});
+	};
+
+	client.ls(thoth.path, lsopts, ondir);
+}
+
 handlers.object = function (client, argv)
 {
 	openDump(argv[0], function (file) {
@@ -1827,9 +1942,9 @@ var setProp = function (client, keys, prop, val, sysprop)
 	cmd += 'cat $MANTA_INPUT_FILE ' + tmp + ' | json --deep-merge > ' +
 	    json + ';';
 	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;'; 
-	cmd += 'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
+	cmd += jobExecThoth(json) + ' || ' +
+	    'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
 	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
-	cmd += '; ' + jobExecThoth(json);
  
 	jobOneKey(client, keys, cmd,
 	    function () { process.exit(0) }, jobSetThoth);
@@ -1842,9 +1957,9 @@ var unsetProp = function (client, keys, prop, sysprop)
 	    (sysprop ? '' : 'properties.') +
 	    prop + '=undefined" > ' + json + '; ';
 	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;'; 
-	cmd += 'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
+	cmd += jobExecThoth(json) + ' || ' +
+	    'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
 	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
-	cmd += '; ' + jobExecThoth(json);
 
 	jobOneKey(client, keys, cmd,
 	    function () { process.exit(0) }, jobSetThoth);
@@ -1991,8 +2106,8 @@ var setAnalyzer = function (client, exec, cb)
 	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
-	cmd += '	' + jobExecThoth('$propout') + '\n';
+	cmd += '	' + jobExecThoth('$propout') + ' || ' +
+	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_unset()\n';
@@ -2005,8 +2120,8 @@ var setAnalyzer = function (client, exec, cb)
 	cmd += '	cat $THOTH_INFO | json -e ';
 	cmd += '"this.properties.$1=undefined" > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
-	cmd += '	' + jobExecThoth('$propout') + '\n';
+	cmd += '	' + jobExecThoth('$propout') + ' || ' +
+	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_ticket()\n';
@@ -2021,8 +2136,8 @@ var setAnalyzer = function (client, exec, cb)
 	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
-	cmd += '	' + jobExecThoth('$propout') + '\n';
+	cmd += '	' + jobExecThoth('$propout') + ' || ' +
+	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_unticket()\n';
@@ -2032,14 +2147,15 @@ var setAnalyzer = function (client, exec, cb)
 	cmd += '	cat $THOTH_INFO | json -e "this.ticket=undefined"';
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
-	cmd += '	' + jobExecThoth('$propout') + '\n';
+	cmd += '	' + jobExecThoth('$propout') + ' || ' +
+	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
 	var asset = thoth.analyzers + '/.thoth.' + process.pid + '.' +
 	    (new Date().valueOf() / 1000);
 
 	cmd += 'if [[ -z "$THOTH_DUMP" ]]; then\n';
+	cmd += '	export DTRACE_DOF_INIT_DISABLE=1\n';
 	cmd += '	export THOTH_DUMP=$MANTA_INPUT_FILE\n';
 	cmd += '	THOTH_NAME=`basename $(dirname $MANTA_INPUT_FILE)`\n';
 	cmd += '	export THOTH_NAME\n';
@@ -2351,6 +2467,9 @@ handlers.analyzers = function (client, argv)
 handlers.analyze = function (client, argv)
 {
 	var analyzer = argv.pop();
+
+	if (!analyzer)
+		fatal('need to specify an analyzer');
 
 	if (analyzer.indexOf('/') != 0)
 		analyzer = thoth.analyzers + '/' + analyzer;
