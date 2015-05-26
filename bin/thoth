@@ -899,7 +899,7 @@ jobSetThoth = function (job)
 	phase.assets.push(asset);
 
 	phase.init = 'echo \'{"db": ' + JSON.stringify(thoth.db) + '}\' > ' +
-	    '~/' + config + '; tar xzf /assets/' + asset;
+	    '~/' + config + '; cd / ; tar xzf /assets/' + asset;
 }
 
 jobExecThoth = function (what)
