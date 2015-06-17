@@ -1378,7 +1378,7 @@ var openDump = function (name, cb, failed)
 	}
 }
 
-var infoGet = function (client, dump, cb)
+var infoGet = function (client, dump, cb, bypass)
 {
 	argToInfo(client, dump, function (object, err, stream, res) {
 		checkError(err);
@@ -1397,7 +1397,7 @@ var infoGet = function (client, dump, cb)
 		stream.on('end', function () {
 			cb(JSON.parse(output));
 		});
-	});
+	}, bypass);
 }
 
 handlers.upload = function (client, argv)
@@ -1480,6 +1480,7 @@ handlers.load = function (client, argv)
 	var info;
 
 	var load = function (info) {
+console.log(info);
 		info.id = id = info.name.split('/').pop();
 
 		mod_r.connect(thoth.db, function (err, conn) {
@@ -1525,7 +1526,7 @@ handlers.load = function (client, argv)
 	if (argv[0].indexOf('=') != -1 || argv[0].length < thoth.hashlen)
 		fatal('need a fully specified dump to load');
 
-	infoGet(client, argv[0], load);
+	infoGet(client, argv[0], load, true);
 }
 
 handlers.debug = function (client, argv)
@@ -2033,13 +2034,13 @@ var partialArgToInfo = function (arg, cb, errcb)
 	});
 }
 
-var argToInfo = function (client, arg, cb)
+var argToInfo = function (client, arg, cb, bypass)
 {
 	var object = [ thoth.path, arg, 'info.json' ].join('/');
 
 	var trylocal = function (err) {
 		openDump(arg, function (file) { 
-			argToInfo(client, file.digest, cb);
+			argToInfo(client, file.digest, cb, bypass);
 			return;
 		}, function () {
 			/*
@@ -2072,6 +2073,9 @@ var argToInfo = function (client, arg, cb)
 			cb(object, err, stream, res);
 		});
 	};
+
+	if (bypass)
+		return (tryManta());
 
 	/*
 	 * First, hit the database.  If that fails, try Manta...
