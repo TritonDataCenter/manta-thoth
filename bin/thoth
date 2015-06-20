@@ -1550,6 +1550,9 @@ handlers.ls = function (client, argv)
 			if (output.length > 0)
 				output += ' ';
 
+			if (!widths[hdr])
+				widths[hdr] = hdr.length;
+
 			output += sprintf('%-' + widths[hdr] + 's',
 			    hdr.toUpperCase().substr(0, widths[hdr]));
 		});
@@ -2478,6 +2481,16 @@ handlers.ticket = function (client, argv)
 		fatal('need both dump specification and ticket');
 
 	var ticket = argv.pop();
+
+	if (ticket.indexOf('=') != -1) {
+		/*
+		 * This is almost certanly an error in that the user has
+		 * offered a specification without a ticket.  We explicitly
+		 * reject this to prevent mass mis-ticketing!
+		 */
+		fatal('\'' + ticket + '\' is not a valid ticket');
+	}
+
 	argv.push('ticket');
 	argv.push(ticket);
 
