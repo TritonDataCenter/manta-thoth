@@ -1427,13 +1427,102 @@ handlers.upload = function (client, argv)
 
 handlers.ls = function (client, argv)
 {
-	var fmt = '%-16s %-5s %-19s %-16s %s';
-	var fields = [ 'name', 'time', 'type', 'cmd', 'node', 'ticket' ];
+	var fields = [ 'name', 'type', 'time', 'node', 'cmd', 'ticket' ];
+	var obj = {}, widths = {};
+	var i;
 
-	dumpsFromSpec(argv, { fields: fields }, function (dumps) {
-		console.log(sprintf(fmt,
-		    'DUMP', 'TYPE', 'TIME', 'NODE/CMD', 'TICKET'));
+	for (i = 0; i < argv.length; i++) {
+		if (argv[i].indexOf('=') == -1)
+			break;
+	}
 
+	if (i < argv.length) {
+		fields = fields.concat(argv.splice(i, argv.length - i));
+	} else {
+		/*
+		 * If we have the default output, adjust our fields lengths
+		 * to be constant.
+		 */
+		widths['node/cmd'] = 16;
+		widths['type'] = 5;
+	}
+
+	var assign = function (o, prop) {
+		if (prop.length == 1) {
+			o[prop[0]] = true;
+			return;
+		}
+
+		if (!o[prop[0]])
+			o[prop[0]] = {};
+
+		assign(o[prop.shift()], prop);
+	};
+
+	/*
+	 * We need to iterate over our fields, turning them into a specifcation
+	 * object.
+	 */
+	for (i = 0; i < fields.length; i++) {
+		if (fields[i].indexOf('=') != -1) {
+			fatal('can\'t intermix specification properties ' +
+			    'with output properties');
+		}
+
+		assign(obj, fields[i].split('.'));
+	}
+
+	var transforms = {
+		name: function (val) { 
+			return (mod_path.basename(val).substr(0, 16));
+		},
+		time: function (val) {
+			var t = new Date(val * 1000);
+			return (t.toISOString().substr(0, 19));
+		}
+	};
+
+	var dumpfields = function (dump, fields, cb) {
+		var j;
+
+		for (j = 0; j < fields.length; j++) {
+			var f = fields[j];
+			var hdr = f;
+			var val;
+
+			if (hdr.indexOf('.') != -1)
+				hdr = hdr.split('.').pop();
+
+			if (f == 'node' && fields[j + 1] == 'cmd') {
+				hdr = f + '/' + fields[j + 1];
+
+				if (dump && dump.type == 'core')
+					f = 'cmd';
+				j++;
+			}
+
+			if (!dump) {
+				cb(hdr);
+				continue;
+			}
+
+			try {
+				val = eval('dump.' + f);
+
+				if (transforms[f])
+					val = transforms[f](val);
+			} catch(err) {
+				val = undefined;
+			}
+
+			if (val === undefined)
+				val = '-';
+
+			cb(hdr, val);
+		}
+	};
+
+	dumpsFromSpec(argv, { fields: obj }, function (dumps) {
 		for (i = 0; i < dumps.length; i++) {
 			if (!dumps[i].time)
 				dumps[i].time = 0;
@@ -1446,14 +1535,39 @@ handlers.ls = function (client, argv)
 		for (i = 0; i < dumps.length; i++) {
 			var dump = dumps[i];
 
-			var t = new Date(dump.time * 1000);
+			dumpfields(dumps[i], fields, function (hdr, val) {
+				if (i == 0 && !widths[hdr])
+					widths[hdr] = hdr.length;
 
-			console.log(sprintf(fmt,
-			    mod_path.basename(dump.name).substr(0, 16),
-			    dump.type,
-			    t.toISOString().substr(0, 19),
-			    dump.type == 'core' ? dump.cmd : dump.node,
-			    dump.ticket ? dump.ticket : '-'));
+				if (val.length > widths[hdr])
+					widths[hdr] = val.length;
+			});
+		}
+
+		var output = '';
+
+		dumpfields(undefined, fields, function (hdr) {
+			if (output.length > 0)
+				output += ' ';
+
+			output += sprintf('%-' + widths[hdr] + 's',
+			    hdr.toUpperCase().substr(0, widths[hdr]));
+		});
+
+		console.log(output);
+
+		for (i = 0; i < dumps.length; i++) {
+			output = '';
+
+			dumpfields(dumps[i], fields, function (hdr, val) {
+				if (output.length > 0)
+					output += ' ';
+
+				output += sprintf('%-' +
+				     widths[hdr] + 's', val);
+			});
+
+			console.log(output);
 		}
 
 		process.exit(0);
@@ -1901,7 +2015,7 @@ handlers.report = function (client, argv)
 		if (nested.length > 1) {
 			var i = nested.length - 1;
 			var val = true;
-	
+
 			while (i >= 0) {
 				var o = new Object();
 				o[nested[i--]] = val;
