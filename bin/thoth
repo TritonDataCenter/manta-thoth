@@ -1826,7 +1826,8 @@ handlers.index = function (client, argv)
 			if (!obj.name.match(thoth.unindexed + '$'))
 				return;
 
-			add(obj.name);
+			add(obj.name.substr(0,
+			    obj.name.indexOf(thoth.unindexed)) + '/info.json');
 		});
 
 		res.on('directory', function (dir) {
