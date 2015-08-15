@@ -52,6 +52,7 @@ var thoth = {
 	},
 	useindex: true,
 	analyzerdebug: false,
+	v8: '/Joyent_Dev/public/mdb_v8/latest',
 	cmds: [
 		{ token: 'upload', params: '[file]',
 		    usage: 'upload the specified core or crash dump' },
@@ -1031,7 +1032,7 @@ dumpsFromSpec = function (argv, opts, cb)
 			f[undefs[i]] = null;
 			rval = rval.filter(f, { default: true });
 		}
-			
+
 		if (opts.fields) {
 			if (opts.group) {
 				if (opts.fields.length > 1)
@@ -1597,7 +1598,6 @@ handlers.load = function (client, argv)
 	var info;
 
 	var load = function (info) {
-console.log(info);
 		info.id = id = info.name.split('/').pop();
 
 		mod_r.connect(thoth.db, function (err, conn) {
@@ -1733,7 +1733,7 @@ handlers.debug = function (client, argv)
 					process.exit(code);
 				});
 			});
-		});
+		}, { loadv8: analyzer ? false : true });
 	};
 
 	if (argv.length > 1 && argv[argv.length - 1].indexOf('=') == -1)
@@ -2206,7 +2206,45 @@ var dumpToInfoPath = function (dump)
 	return ([ dump.name, 'info.json'].join('/'));
 }
 
-var setAnalyzer = function (client, exec, cb)
+var setV8 = function (opts)
+{
+	var cmd = '';
+
+	cmd = 'if [[ `cat $THOTH_INFO | json cmd` == "node" ]]; then\n';
+	cmd += '	THOTH_V8_32=mdb_v8_ia32.so\n';
+	cmd += '	THOTH_V8_64=mdb_v8_amd64.so\n';
+	cmd += '	THOTH_V8_DIR=/root/mdb\n';
+	cmd += '	THOTH_V8_DIR_64=/root/mdb/amd64\n';
+	cmd += '	THOTH_V8_LATEST=/Joyent_Dev/public/mdb_v8/latest\n';
+	cmd += '\n';
+	cmd += '	if [[ ! -d $THOTH_V8_DIR ]]; then\n';
+	cmd += '		mkdir $THOTH_V8_DIR\n';
+	cmd += '		mkdir $THOTH_V8_DIR_64\n';
+	cmd += '	fi\n';
+	cmd += '\n';
+	cmd += '	if [[ ! -f $THOTH_V8_DIR/v8.so ]]; then\n';
+	cmd += '		THOTH_V8_LATEST=`mget -q ' +
+	    thoth.v8 + '`\n';
+	cmd += '		mget -q $THOTH_V8_LATEST/$THOTH_V8_32 ' +
+	    '> $THOTH_V8_DIR/v8.so\n';
+	cmd += '		mget -q $THOTH_V8_LATEST/$THOTH_V8_64 ' +
+	    '> $THOTH_V8_DIR_64/v8.so\n';
+	cmd += '	fi\n';
+	cmd += '\n';
+	cmd += '	if [[ ! -f ~/.mdbrc ]]; then\n';
+	cmd += '		echo "::set -L /root/mdb:/usr/lib/mdb/proc" ' +
+	    '> ~/.mdbrc\n';
+
+	if (opts && opts.loadv8)
+		cmd += '		echo "::load v8.so" >> ~/.mdbrc\n';
+
+	cmd += '	fi\n';
+	cmd += 'fi\n';
+
+	return (cmd);
+};
+
+var setAnalyzer = function (client, exec, cb, opts)
 {
 	var cmd = '';
 
@@ -2314,6 +2352,8 @@ var setAnalyzer = function (client, exec, cb)
 			    '~/.bashrc\n';
 	cmd += '	export THOTH_UNINDEXED_OBJECT=${THOTH_DIR}' +
 			    thoth.unindexed + '\n\n';
+	cmd += setV8(opts);
+
 	cmd += '	' + exec + '\n';
 	cmd += 'fi\n';
 
