@@ -54,6 +54,8 @@ var thoth = {
 	analyzerdebug: false,
 	v8: '/Joyent_Dev/public/mdb_v8/latest',
 	cmds: [
+		{ token: 'init',
+		    usage: 'initialize/validate thoth' },
 		{ token: 'upload', params: '[file]',
 		    usage: 'upload the specified core or crash dump' },
 		{ token: 'info', params: '[dump]', disconnected: true,
@@ -137,7 +139,6 @@ var hms = function (ms)
 	    Math.floor(((seconds % 3600) / 60)) + 'm' +
 	    (seconds % 60) + 's');
 };
-
 
 var time2seconds = function (t)
 {
@@ -891,7 +892,7 @@ jobOneKey = function (client, key, cmd, cb, preflight)
 jobSetThoth = function (job)
 {
 	var phase = job.phases[0];
-	var asset = thoth.path + '/' + thoth.asset;
+	var asset = '/thoth/public/assets/' + thoth.asset;
 	var config = '.thoth.' + thoth.config;
 
 	if (!phase.assets) 
@@ -2750,6 +2751,68 @@ handlers.logs = function (client, argv)
 	});
 }
 
+handlers.init = function ()
+{
+	var db = thoth.db.db;
+	var tables = [ 'dumps', 'analyzers' ];
+	var indices = [ { table: 'dumps', index: 'time' } ];
+	delete thoth.db.db;
+
+	var checkerr = function (err, kind, what) {
+		if (!err) {
+			status('created ' + kind + ' \'' + what + '\'');
+			return;
+		}
+
+		if (err && err.message.indexOf('already exists') != -1) {
+			status(kind + ' \'' + what + '\' already exists');
+			return;
+		}
+
+		fatal('couldn\'t create ' + kind + ' \'' + what + '\'');
+	};
+
+	var createIndices = function (conn, indices) {
+		var index = indices.shift();
+		var rval;
+
+		if (!index)
+			process.exit(0);
+
+		rval = mod_r.db(db).table(index.table);
+		rval.indexCreate(index.index).run(conn, function (err) {
+			checkerr(err, 'index', index.index);
+			createIndices(conn, indices);
+		});
+	};
+
+	var createTables = function (conn, tables) {
+		var table = tables.shift();
+
+		if (!table) {
+			createIndices(conn, indices);
+			return;
+		}
+
+		mod_r.db(db).tableCreate(table).run(conn, function (err) {
+			checkerr(err, 'table', table);
+			createTables(conn, tables);
+		});
+	};
+
+	mod_r.connect(thoth.db, function (err, conn) {
+		if (err) {
+			fatal('couldn\'t connect to database: ' +
+			    err.message);
+		}
+
+		mod_r.dbCreate(db).run(conn, function (err) {
+			checkerr(err, 'database', db);
+			createTables(conn, tables);
+		});
+	});
+};
+
 var connect = function()
 {
 	var i, opts = {};
@@ -2780,7 +2843,7 @@ var configure = function(cb)
 	var object = thoth.path + '/' + thoth.config;
 	var client = undefined;
 
-	thoth.db.db = thoth.path.split('/')[1];
+	thoth.db.db = thoth.path.split('/')[1].replace('.', '_');
 
 	/*
 	 * First, look for environment variables.
