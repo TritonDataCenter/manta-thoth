@@ -1720,7 +1720,8 @@ handlers.debug = function (client, argv)
 		setAnalyzer(client, cmd, function (asset) { 	
 			args = args.concat([ '-s', asset,
 			    '-s', dummy.phases[0].assets[0],
-			    '-c', '/assets/' + asset ]);
+			    '-c', '/assets/' + asset,
+			    '--memory=2048' ]);
 
 			var child = mod_child.spawn(mlogin, args,
 			    { stdio: 'inherit' });
