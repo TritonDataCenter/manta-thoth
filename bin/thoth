@@ -122,7 +122,7 @@ var usage = function (msg)
 	var i, c = mod_path.basename(process.argv[1]);
 
 	console.error(c + ': ' + msg);
-        console.error('Usage: ' + c + ' [command] [params]\n');
+	console.error('Usage: ' + c + ' [command] [params]\n');
 
 	for (i = 0; i < thoth.cmds.length; i++) {
 		var cmd = thoth.cmds[i].token + (thoth.cmds[i].params ?
@@ -130,9 +130,9 @@ var usage = function (msg)
 
 		console.error(sprintf('  %-26s %s',
 		    cmd, thoth.cmds[i].usage));
-        }
+	}
 
-        process.exit(1);
+	process.exit(1);
 };
 
 var check = function (cmd, argv, usage)
@@ -202,7 +202,7 @@ var isCore = function (fd, sum)
 	var minsize = 8192, i;
 
 	var err = function (msg) {
-		if (thoth.crazyverbose) 
+		if (thoth.crazyverbose)
 			warn('not an ELF file: ' + msg);
 	};
 
@@ -645,7 +645,7 @@ var isCore = function (fd, sum)
 		err('unknown data class ' + hdr[constants.EI_DATA]);
 		return (false);
 	}
-  
+
 	parser = new mod_ctype.Parser({ endian: endianness });
 
 	var types = {
@@ -806,7 +806,7 @@ var isCrash = function (fd, sum)
 		status('dump is not compressed');
 		return (false);
 	}
-	
+
 	/*
 	 * To hash a dump, we hash only the dump header.  This contains enough
 	 * information (and in particular, time stamp, node name, and number
@@ -840,7 +840,7 @@ jobWait = function (client, jobid, cb)
 				status('job ' + jobid +  ' completed in ' +
 				    hms(new Date().valueOf() - start));
 				cb(job);
-	 		} else {
+			} else {
 				fatal('job ' + jobid + ' failed: ' +
 				    util.inspect(job));
 			}
@@ -916,7 +916,7 @@ jobSetThoth = function (job)
 	var asset = '/thoth/public/assets/' + thoth.asset;
 	var config = '.thoth.' + thoth.config;
 
-	if (!phase.assets) 
+	if (!phase.assets)
 		phase.assets = [];
 
 	phase.assets.push(asset);
@@ -928,7 +928,7 @@ jobSetThoth = function (job)
 jobExecThoth = function (what)
 {
 	return ('/opt/custom/thoth/node_modules/manta-thoth/bin/thoth ' +
-	   'load ' + what);
+	    'load ' + what);
 }
 
 dumpsFromSpec = function (argv, opts, cb)
@@ -956,7 +956,9 @@ dumpsFromSpec = function (argv, opts, cb)
 			});
 		}
 
-		return (function (dump) { return (dump.hasFields(arg)); });
+		return (function (dump) {
+			return (dump.hasFields(arg));
+		});
 	};
 
 	var eqfilter = function (field, match) {
@@ -972,7 +974,9 @@ dumpsFromSpec = function (argv, opts, cb)
 	};
 
 	var framematch = function (match) {
-		return (function (frame) { return frame.match(match); });
+		return (function (frame) {
+			return (frame.match(match));
+		});
 	};
 
 	var stackfilter = function (func) {
@@ -997,12 +1001,14 @@ dumpsFromSpec = function (argv, opts, cb)
 		 * we'll turn it into a proper regular expression.
 		 */
 		if (filter[1].indexOf('*') != -1) {
+			/*JSSTYLED*/
 			illegal = filter[1].match(/([.+?^=!:${}()|[\]\/\\])/);
 
 			if (illegal)
 				break;
 
 			var re = '^' +
+			    /*JSSTYLED*/
 			    filter[1].replace(/\*/g, '(.|\\n)*') + '$';
 
 			if (filter[0] == 'stack') {
@@ -1013,6 +1019,7 @@ dumpsFromSpec = function (argv, opts, cb)
 		} else if (filter[1] == 'undefined') {
 			undefs.push(filter[0]);
 		} else {
+			/*JSSTYLED*/
 			illegal = filter[1].match(/["']/);
 
 			if (illegal)
@@ -1084,7 +1091,7 @@ dumpsFromSpec = function (argv, opts, cb)
 				if (!opts.fields[0]) {
 					/*
 					 * If we don't have a field that we're
-				 	 * reporting, the caller just wants a
+					 * reporting, the caller just wants a
 					 * count; there's nothing else to do.
 					 */
 					cb(cursor);
@@ -1212,7 +1219,7 @@ var progressBar = function (dump, stream, stat)
 	var bar = new mod_manta.ProgressBar({
 		filename: 'thoth: ' + mod_path.basename(dump),
 		size: stat.size,
-		nosize: false 
+		nosize: false
 	});
 
 	stream.on('data', function (data) {
@@ -1427,7 +1434,7 @@ handlers.upload = function (client, argv)
 {
 	put = {
 		crash: putCrash,
-		core: putCore 
+		core: putCore
 	};
 
 	var next = function () {
@@ -1496,7 +1503,7 @@ handlers.ls = function (client, argv)
 	}
 
 	var transforms = {
-		name: function (val) { 
+		name: function (val) {
 			return (mod_path.basename(val).substr(0, 16));
 		},
 		time: function (val) {
@@ -1534,7 +1541,7 @@ handlers.ls = function (client, argv)
 
 				if (transforms[f])
 					val = transforms[f](val);
-			} catch(err) {
+			} catch (err) {
 				val = undefined;
 			}
 
@@ -1656,7 +1663,7 @@ handlers.load = function (client, argv)
 			fatal('couldn\'t parse ' + argv[0] + ': ' + err);
 	}
 
-  	/*
+	/*
 	 * That failed; we'll now connect to Manta and assume that this is a
 	 * fully specified dump.
 	 */
@@ -1674,7 +1681,7 @@ handlers.debug = function (client, argv)
 	    '/../bin/mlogin';
 	var analyzer = undefined;
 
-	var analyzerCmd = function(args) {
+	var analyzerCmd = function (args) {
 		var cmd = 'export THOTH_ANALYZER=/var/tmp/' + analyzer + '\n';
 		var path = [ thoth.analyzers, analyzer ].join('/');
 		var analyze = 'cat \\$THOTH_ASSET \\$THOTH_ANALYZER | bash';
@@ -1739,7 +1746,7 @@ handlers.debug = function (client, argv)
 			cmd += 'mdb $MANTA_INPUT_FILE';
 		}
 
-		setAnalyzer(client, cmd, function (asset) { 	
+		setAnalyzer(client, cmd, function (asset) {
 			args = args.concat([ '-s', asset,
 			    '-s', dummy.phases[0].assets[0],
 			    '-c', '/assets/' + asset,
@@ -1831,7 +1838,7 @@ handlers.index = function (client, argv)
 		seen[obj.name] = true;
 		again = true;
 		nprocessed++;
- 
+
 		return (false);
 	};
 
@@ -1966,7 +1973,7 @@ handlers.clean = function (client, argv)
 			checkError(err);
 		});
 
-	 	res.on('object', function (obj) {
+		res.on('object', function (obj) {
 			if (obj.mtime == lsopts.query.marker) {
 				if (seen[obj.name])
 					return;
@@ -2104,11 +2111,11 @@ var setProp = function (client, keys, prop, val, sysprop)
 
 	cmd += 'cat $MANTA_INPUT_FILE ' + tmp + ' | json --deep-merge > ' +
 	    json + ';';
-	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;'; 
+	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;';
 	cmd += jobExecThoth(json) + ' || ' +
 	    'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
 	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
- 
+
 	jobOneKey(client, keys, cmd,
 	    function () { process.exit(0) }, jobSetThoth);
 }
@@ -2119,7 +2126,7 @@ var unsetProp = function (client, keys, prop, sysprop)
 	var cmd = 'cat $MANTA_INPUT_FILE | json -e "this.' +
 	    (sysprop ? '' : 'properties.') +
 	    prop + '=undefined" > ' + json + '; ';
-	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;'; 
+	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;';
 	cmd += jobExecThoth(json) + ' || ' +
 	    'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
 	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
@@ -2180,7 +2187,7 @@ var argToInfo = function (client, arg, cb, bypass)
 	var object = [ thoth.path, arg, 'info.json' ].join('/');
 
 	var trylocal = function (err) {
-		openDump(arg, function (file) { 
+		openDump(arg, function (file) {
 			argToInfo(client, file.digest, cb, bypass);
 			return;
 		}, function () {
@@ -2208,7 +2215,7 @@ var argToInfo = function (client, arg, cb, bypass)
 				trylocal(err);
 				return;
 			}
-			
+
 			checkError(err);
 
 			cb(object, err, stream, res);
@@ -2675,7 +2682,7 @@ handlers.analyzers = function (client, argv)
 			if (err.code == 'ResourceNotFound')
 				process.exit(0);
 		});
-	
+
 		res.on('end', function () { done(); });
 	});
 };
@@ -2703,7 +2710,7 @@ handlers.analyze = function (client, argv)
 
 		for (dump in dumps)
 			keys.push(dumps[dump].dump);
-	
+
 		runAnalyzer(client, keys, analyzer);
 	});
 };
@@ -2715,7 +2722,7 @@ loadAutoanalyzers = function (cb)
 			fatal('couldn\'t connect to database: ' + err.message);
 
 		mod_r.table('analyzers').run(conn, function (err, cursor) {
-			cursor.toArray (function (err, results) {
+			cursor.toArray(function (err, results) {
 				cb(results);
 			});
 		});
@@ -2781,7 +2788,7 @@ planAutoanalyzers = function (analyzers, msg)
 				    'autoanalyzers ' + plan[i].name +
 				    ' and ' + children[j].name);
 			}
-			
+
 			if (children[j].rank == 0)
 				children[j].rank = plan.push(children[j]);
 		}
@@ -2857,7 +2864,7 @@ autoanalyzers.ls = function (client, argv)
 
 		for (i = 0; i < results.length; i++)
 			print(results[i]);
-			
+
 		process.exit(0);
 	});
 };
@@ -2908,7 +2915,7 @@ autoanalyzers.upload = function (client, argv)
 	if (!analyzer)
 		fatal('autoanalyzers must have an "analyzer" object');
 
-	if (typeof analyzer != 'object')
+	if (typeof (analyzer) != 'object')
 		fatal('"analyzer" must be an object');
 
 	var required = {
@@ -2937,17 +2944,17 @@ autoanalyzers.upload = function (client, argv)
 				continue;
 			}
 
-			if (typeof analyzer[f] == typeof fields[f]) {
-				if (typeof analyzer[f] != typeof [])
+			if (typeof (analyzer[f]) == typeof (fields[f])) {
+				if (typeof (analyzer[f]) != typeof ([]))
 					continue;
 
 				if (analyzer[f].length == 0)
 					continue;
 
 				for (i = 0; i < analyzer[f].length; i++) {
-					var t = typeof analyzer[f][i];
+					var t = typeof (analyzer[f][i]);
 
-					if (t == typeof fields[f][0])
+					if (t == typeof (fields[f][0]))
 						continue;
 
 					break;
@@ -2957,13 +2964,13 @@ autoanalyzers.upload = function (client, argv)
 					continue;
 
 				fatal('expected analyzer.' + f + ' to be an ' +
-				    'array of type ' + typeof fields[f][0] +
+				    'array of type ' + typeof (fields[f][0]) +
 				    '; ' + 'element ' + i + ' is of type ' + t);
 			}
 
 			fatal('expected analyzer.' + f + ' to be ' +
-			    'of type ' + typeof required[f] + '; ' +
-			    'found type ' + typeof analyzer[f]);
+			    'of type ' + typeof (required[f]) + '; ' +
+			    'found type ' + typeof (analyzer[f]));
 		}
 	};
 
@@ -3008,7 +3015,7 @@ autoanalyzers.upload = function (client, argv)
 	 * it doesn't create a cycle.
 	 */
 	flattenAutoanalyzers(function (analyzers) {
-		planAutoanalyzers(analyzers, 'cannot load autoanalyzers');	
+		planAutoanalyzers(analyzers, 'cannot load autoanalyzers');
 		analyzers[analyzer.name] = JSON.parse(JSON.stringify(analyzer));
 		planAutoanalyzers(analyzers, 'cannot add ' + analyzer.name);
 		insert();
@@ -3023,7 +3030,7 @@ handlers.autoanalyzers = function (client, argv)
 		var c = mod_path.basename(process.argv[1]);
 
 		console.error(c + ': ' + msg);
-        	console.error('Usage: ' + c +
+		console.error('Usage: ' + c +
 		    ' autoanalyzers [subcommand] [params]\n');
 
 		for (i = 0; i < subcmds.length; i++) {
@@ -3032,7 +3039,7 @@ handlers.autoanalyzers = function (client, argv)
 
 			console.error(sprintf('  %-26s %s',
 			    cmd, subcmds[i].usage));
-        	}
+		}
 
 		process.exit(1);
 	}
@@ -3040,13 +3047,13 @@ handlers.autoanalyzers = function (client, argv)
 	var subcmds = [
 		{ token: 'upload', params: '[file]',
 		    usage: 'upload an autoanalyzer' },
-		{ token: 'ls', 
+		{ token: 'ls',
 		    usage: 'list autoanalyzers' },
-		{ token: 'dryrun', 
+		{ token: 'dryrun',
 		    usage: 'dry run autoanalyzers' },
-		{ token: 'run', 
+		{ token: 'run',
 		    usage: 'run autoanalyzers' },
-		{ token: 'remove', params: '[autoanalyzer]', 
+		{ token: 'remove', params: '[autoanalyzer]',
 		    usage: 'remove an autoanalyzer' }
 	];
 
@@ -3081,11 +3088,11 @@ handlers.logs = function (client, argv)
 	var timePath = function (hours) {
 		var t = new Date(new Date().valueOf() - (3600 * hours * 1000));
 
-		return (sprintf("%02d/%02d/%02d",
+		return (sprintf('%02d/%02d/%02d',
 		    t.getUTCMonth() + 1, t.getUTCDate(), t.getUTCHours()));
 	};
 
-	var descend = function(path, cb) {
+	var descend = function (path, cb) {
 		outstanding[path] = 1;
 
 		var done = function () {
@@ -3198,7 +3205,7 @@ handlers.init = function ()
 	});
 };
 
-var connect = function()
+var connect = function ()
 {
 	var i, opts = {};
 	var mvars = [ 'MANTA_URL', 'MANTA_USER', 'MANTA_KEY_ID' ];
@@ -3220,7 +3227,7 @@ var connect = function()
 	return (mod_manta.createBinClient(opts));
 }
 
-var configure = function(cb)
+var configure = function (cb)
 {
 	var k;
 	var conf = false;
@@ -3293,7 +3300,7 @@ var configure = function(cb)
 	});
 }
 
-var main = function()
+var main = function ()
 {
 	var i, argv = process.argv;
 	var client = undefined;
