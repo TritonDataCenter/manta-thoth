@@ -15,11 +15,13 @@ var mod_manta = require('manta');
 var mod_zlib = require('zlib');
 var mod_child = require('child_process');
 var mod_r = require('rethinkdb');
+var mod_vm = require('vm');
 
 var Readable = require('stream').Readable;
 var sprintf = require('sprintf').sprintf;
 
 var handlers = {};
+var autoanalyzers = {};
 
 var thoth = {
 	version: 1,
@@ -74,6 +76,8 @@ var thoth = {
 		    usage: 'set ticket for the specified dump(s)' },
 		{ token: 'unticket', params: '[dump]',
 		    usage: 'unset ticket for the specified dump(s)' },
+		{ token: 'autoanalyzers', params: '[cmd]', disconnected: true,
+		    usage: 'perform operations on autoanalyzers' },
 		{ token: 'analyze', params: '[dump] [analyzer]',
 		    usage: 'analyze the specified dump(s)' },
 		{ token: 'analyzer', params: '[analyzer]',
@@ -129,6 +133,23 @@ var usage = function (msg)
         }
 
         process.exit(1);
+};
+
+var check = function (cmd, argv, usage)
+{
+	if (!cmd.params)
+		return;
+
+	var p = cmd.params.split(' ');
+
+	while (p.length > 0 && p[p.length - 1].indexOf('[[') == 0)
+		p.pop();
+
+	if (argv.length < p.length) {
+		var param = p[p.length - 1].split(/[\[\]]/)[1];
+
+		usage('missing ' + param + ' parameter');
+	}
 };
 
 var hms = function (ms)
@@ -2687,6 +2708,370 @@ handlers.analyze = function (client, argv)
 	});
 };
 
+loadAutoanalyzers = function (cb)
+{
+	mod_r.connect(thoth.db, function (err, conn) {
+		if (err)
+			fatal('couldn\'t connect to database: ' + err.message);
+
+		mod_r.table('analyzers').run(conn, function (err, cursor) {
+			cursor.toArray (function (err, results) {
+				cb(results);
+			});
+		});
+	});
+};
+
+flattenAutoanalyzers = function (cb)
+{
+	var i, analyzers = {};
+
+	loadAutoanalyzers(function (results) {
+		for (i = 0; i < results.length; i++)
+			analyzers[results[i].name] = results[i];
+
+		cb(analyzers);
+	});
+};
+
+planAutoanalyzers = function (analyzers, msg)
+{
+	var plan = [];
+	var i, j, dependency;
+
+	for (i in analyzers) {
+		analyzers[i].children = [];
+		analyzers[i].rank = 0;
+	}
+
+	for (i in analyzers) {
+		var analyzer = analyzers[i];
+		var dependencies = analyzers[i].dependencies;
+
+		if (!dependencies || dependencies.length == 0) {
+			analyzer.rank = plan.push(analyzer);
+			continue;
+		}
+
+		for (j = 0; j < analyzer.dependencies.length; j++) {
+			var dep = analyzer.dependencies[j];
+
+			if (!analyzers[dep]) {
+				fatal(msg + ': analyzer ' + analyzer.name +
+				    ' has unknown dependency "' + dep + '"');
+			}
+
+			analyzers[dep].children.push(analyzer);
+		}
+	}
+
+	for (i = 0; i < plan.length; i++) {
+		var children = plan[i].children;
+
+		for (j = 0; j < children.length; j++) {
+			if (children[j].rank != 0 &&
+			    children[j].rank <= plan[i].rank) {
+				/*
+				 * We have a dependency on us that is being
+				 * run before us in the plan; this can only
+				 * happen because there is a cycle in the
+				 * dependency graph.
+				 */
+				fatal(msg + ': cycle detected including ' +
+				    'autoanalyzers ' + plan[i].name +
+				    ' and ' + children[j].name);
+			}
+			
+			if (children[j].rank == 0)
+				children[j].rank = plan.push(children[j]);
+		}
+	}
+
+	/*
+	 * Finally, look for any analyzers that haven't been planned -- they
+	 * are part of a clique.
+	 */
+	for (i in analyzers) {
+		if (analyzers[i].rank)
+			continue;
+
+		fatal(msg + 'cycle detected rooted at autoanalyzer ' + i);
+	}
+
+	return (plan);
+};
+
+autoanalyzers.run = function (client, argv)
+{
+	var analyzers = {}, i;
+
+	flattenAutoanalyzers(function (analyzers) {
+		planAutoanalyzers(analyzers);
+	});
+}
+
+autoanalyzers.ls = function (client, argv)
+{
+	var widths = {
+		name: 25,
+		'ticket/property': 20
+	}, w;
+
+	var print = function (analyzer) {
+		var output = '';
+
+		for (w in widths) {
+			var props = w.split('/');
+			var val = '-';
+			var j;
+
+			if (analyzer.hasOwnProperty(w)) {
+				val = analyzer[w];
+			} else {
+				for (j = 0; j < props.length; j++) {
+					if (analyzer.hasOwnProperty(props[j])) {
+						val = analyzer[props[j]];
+						break;
+					}
+				}
+			}
+
+			output += sprintf('%-' + widths[w] + 's', val);
+		}
+
+		console.log(output);
+	};
+
+	loadAutoanalyzers(function (results) {
+		var i;
+		var hdr = {};
+
+		results.sort(function (l, r) {
+			return (l.name.localeCompare(r.name));
+		});
+
+		for (w in widths)
+			hdr[w] = w.toUpperCase();
+
+		print(hdr);
+
+		for (i = 0; i < results.length; i++)
+			print(results[i]);
+			
+		process.exit(0);
+	});
+};
+
+autoanalyzers.remove = function (client, argv)
+{
+	mod_r.connect(thoth.db, function (err, conn) {
+		var opts = { returnChanges: true };
+
+		if (err)
+			fatal('couldn\'t connect to database: ' + err.message);
+
+		mod_r.table('analyzers').get(argv[0]).delete(opts).run(conn,
+		    function (err, results) {
+			if (!err && results.deleted == 1) {
+				console.log(results);
+				process.exit(0);
+			}
+
+			fatal('couldn\'t remove "' +
+			    argv[0] + '": ' +
+			    (err ? err.message : 'not found'));
+		});
+	});
+};
+
+autoanalyzers.upload = function (client, argv)
+{
+	var str;
+	var analyzer;
+
+	try {
+		str = mod_fs.readFileSync(argv[0]);
+	} catch (err) {
+		fatal('couldn\'t read ' + argv[0] + ': ' + err);
+	}
+
+	var sandbox = mod_vm.createContext();
+
+	try {
+		mod_vm.runInContext(str, sandbox, { displayErrors: false })
+	} catch (err) {
+		fatal('failed to compile analyzer: ' + err);
+	}
+
+	analyzer = sandbox.analyzer;
+
+	if (!analyzer)
+		fatal('autoanalyzers must have an "analyzer" object');
+
+	if (typeof analyzer != 'object')
+		fatal('"analyzer" must be an object');
+
+	var required = {
+		name: '',
+	};
+
+	var optional = {
+		autoanalyze: true,
+		version: 0,
+		dependencies: [ '' ],
+		matches: [ {} ],
+		ticket: '',
+		property: ''
+	};
+
+	var check = function (fields) {
+		var f;
+
+		for (f in fields) {
+			if (!analyzer.hasOwnProperty(f)) {
+				if (fields === required) {
+					fatal('"analyzer" is missing ' +
+					     'required field "' + f + '"');
+				}
+
+				continue;
+			}
+
+			if (typeof analyzer[f] == typeof fields[f]) {
+				if (typeof analyzer[f] != typeof [])
+					continue;
+
+				if (analyzer[f].length == 0)
+					continue;
+
+				for (i = 0; i < analyzer[f].length; i++) {
+					var t = typeof analyzer[f][i];
+
+					if (t == typeof fields[f][0])
+						continue;
+
+					break;
+				}
+
+				if (i == analyzer[f].length)
+					continue;
+
+				fatal('expected analyzer.' + f + ' to be an ' +
+				    'array of type ' + typeof fields[f][0] +
+				    '; ' + 'element ' + i + ' is of type ' + t);
+			}
+
+			fatal('expected analyzer.' + f + ' to be ' +
+			    'of type ' + typeof required[f] + '; ' +
+			    'found type ' + typeof analyzer[f]);
+		}
+	};
+
+	check(required);
+	check(optional);
+
+	for (f in analyzer) {
+		if (required.hasOwnProperty(f) || optional.hasOwnProperty(f))
+			continue;
+
+		fatal('"analyzer" has unrecognized field "' + f + '"');
+	}
+
+	if (!analyzer.ticket && !analyzer.property)
+		fatal('analyzer must have "ticket" or "property" field');
+
+	analyzer.id = analyzer.name;
+
+	var insert = function () {
+		mod_r.connect(thoth.db, function (err, conn) {
+			if (err) {
+				fatal('couldn\'t connect to database: ' +
+				    err.message);
+			}
+
+			mod_r.table('analyzers').insert(analyzer,
+			    { conflict: 'replace' }).run(conn, done);
+		});
+	};
+
+	var done = function (err, results) {
+		if (!err) {
+			console.log(results);
+			process.exit(0);
+		}
+
+		fatal('couldn\'t insert ' + name + ': ' + err.message);
+	}
+
+	/*
+	 * This looks good -- but before we actually commit it, confirm that
+	 * it doesn't create a cycle.
+	 */
+	flattenAutoanalyzers(function (analyzers) {
+		planAutoanalyzers(analyzers, 'cannot load autoanalyzers');	
+		analyzers[analyzer.name] = JSON.parse(JSON.stringify(analyzer));
+		planAutoanalyzers(analyzers, 'cannot add ' + analyzer.name);
+		insert();
+	});
+}
+
+handlers.autoanalyzers = function (client, argv)
+{
+	var i;
+
+	var usage = function (msg) {
+		var c = mod_path.basename(process.argv[1]);
+
+		console.error(c + ': ' + msg);
+        	console.error('Usage: ' + c +
+		    ' autoanalyzers [subcommand] [params]\n');
+
+		for (i = 0; i < subcmds.length; i++) {
+			var cmd = subcmds[i].token + (subcmds[i].params ?
+			    (' ' + subcmds[i].params) : '');
+
+			console.error(sprintf('  %-26s %s',
+			    cmd, subcmds[i].usage));
+        	}
+
+		process.exit(1);
+	}
+
+	var subcmds = [
+		{ token: 'upload', params: '[file]',
+		    usage: 'upload an autoanalyzer' },
+		{ token: 'ls', 
+		    usage: 'list autoanalyzers' },
+		{ token: 'dryrun', 
+		    usage: 'dry run autoanalyzers' },
+		{ token: 'run', 
+		    usage: 'run autoanalyzers' },
+		{ token: 'remove', params: '[autoanalyzer]', 
+		    usage: 'remove an autoanalyzer' }
+	];
+
+	if (argv.length == 0)
+		usage('need to specify an autoanalyzers subcommand');
+
+	for (i = 0; i < subcmds.length; i++) {
+		if (argv[0] != subcmds[i].token)
+			continue;
+
+		if (!autoanalyzers[subcmds[i].token]) {
+			fatal('unimplemented autoanalyzers subcommand "' +
+			     argv[0] + '"');
+		}
+
+		argv = argv.slice(1, argv.length);
+
+		check(subcmds[i], argv, usage);
+		autoanalyzers[subcmds[i].token].call(this, client, argv);
+		return;
+	}
+
+	usage('unrecognized autoanalyzers subcommand "' + argv[0] + '"');
+}
+
 handlers.logs = function (client, argv)
 {
 	var results = [];
@@ -2934,6 +3319,8 @@ var main = function()
 				continue;
 
 			argv = argv.slice(3, argv.length);
+
+			check(thoth.cmds[i], argv, usage);
 
 			if (!client && !thoth.cmds[i].disconnected)
 				client = connect();
