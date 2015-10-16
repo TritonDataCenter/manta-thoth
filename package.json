@@ -1,10 +1,10 @@
 {
 	"name": "manta-thoth",
 	"description": "Manta-based system for core and crash dump analysis",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"author": "Joyent (joyent.com)",
 	"dependencies": {
-		"manta": "1.6.0",
+		"manta": "2.0.2",
 		"ctype": ">=0.5.2",
 		"sprintf": "0.1.1",
 		"bunyan": "0.21.3",
