@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /*
- * Copyright (c) 2015, Joyent, Inc. All rights reserved.
+ * Copyright 2016 Joyent, Inc.
  */
 
 var mod_ctype = require('ctype');
@@ -16,9 +16,25 @@ var mod_zlib = require('zlib');
 var mod_child = require('child_process');
 var mod_r = require('rethinkdb');
 var mod_vm = require('vm');
+var mod_assert = require('assert');
+var mod_jsprim = require('jsprim');
+
+var mod_stream = require('stream');
+if (!mod_stream.Readable) {
+	/*
+	 * If we're on node 0.8, pull in streams2 explicitly.
+	 */
+	mod_stream = require('readable-stream');
+}
 
 var Readable = require('stream').Readable;
 var sprintf = require('sprintf').sprintf;
+var endsWith = mod_jsprim.endsWith;
+var ThothListStream = require('../lib/liststream').ThothListStream;
+var forEachStream = require('../lib/foreachstream');
+var batchStream = require('../lib/batchstream');
+var mapStream = require('../lib/mapstream');
+var jsondiff = require('../lib/jsondiff');
 
 var handlers = {};
 var autoanalyzers = {};
@@ -88,8 +104,8 @@ var thoth = {
 		    usage: 'debug the specified dump via mlogin and mdb' },
 		{ token: 'index',
 		    usage: 'generate (or regenerate) an index of all dumps' },
-		{ token: 'clean',
-		    usage: 'clean index artifacts' },
+		{ token: 'scrub',
+		    usage: 'check metadata for issues' },
 		{ token: 'logs',
 		    usage: 'list logs for the past hour' },
 		{ token: 'load', params: '[dump]', disconnected: true,
@@ -820,7 +836,7 @@ var isCrash = function (fd, sum)
 checkError = function (err)
 {
 	if (err)
-		fatal(err.toString());
+		fatal(err.stack, 100);
 }
 
 jobWait = function (client, jobid, cb)
@@ -1256,8 +1272,7 @@ var putCore = function (client, file, stat, base, cb)
 
 	stream.on('open', function () {
 		client.put(dump + '.gz', gzip, opts, function (err) {
-			if (err)
-				fatal(err.message);
+			checkError(err);
 
 			uncompressCore(client, stat, base, dump, cb);
 		});
@@ -1778,15 +1793,9 @@ handlers.debug = function (client, argv)
 
 handlers.index = function (client, argv)
 {
-	var again = false, done = false, time = undefined;
+	var scanComplete = false;
 	var id, time;
-	var keys = [];
-	var nprocessed = 0;
-
-	var add = function (what) {
-		again = true;
-		keys.push([ thoth.path, what ].join('/'));
-	};
+	var seen = {};
 
 	var job = { phases: [ {
 		type: 'map',
@@ -1795,10 +1804,6 @@ handlers.index = function (client, argv)
 	} ] };
 
 	jobSetThoth(job);
-
-	var lsopts = { query: { sort: 'mtime' } };
-	var seen = {};
-	var last = undefined;
 
 	for (i = 0; i < argv.length; i++) {
 		var filter = argv[i].split('=');
@@ -1809,85 +1814,90 @@ handlers.index = function (client, argv)
 		time = parseAge(filter[1]);
 	}
 
+	var filter = undefined;
 	if (time) {
 		status('indexing dumps since ' +
 		    (new Date(time * 1000)).toISOString());
+
+		/*
+		 * When "time" ordering is specified, directory entries are
+		 * retrieved from Manta in reverse order; i.e., from the newest
+		 * entry to the oldest entry.
+		 */
+		filter = function (ent, stop) {
+			var ts = ((new Date(ent.mtime)).valueOf() / 1000);
+
+			if (ts >= time) {
+				/*
+				 * This dump is more recent than the cutoff and
+				 * should be included.
+				 */
+				return (true);
+			}
+
+			/*
+			 * This dump, and all subsequent dumps, are older than
+			 * the cutoff time.  Halt the stream now.
+			 */
+			stop();
+			return (false);
+		};
 	} else {
 		status('indexing all dumps');
 	}
 
-	var processed = function (obj) {
-		if (done)
-			return (true);
-
-		if (time && (new Date(obj.mtime).valueOf() / 1000) < time) {
-			done = true;
-			return (true);
-		}
-
-		if (obj.mtime == lsopts.query.marker) {
-			if (seen[obj.name])
-				return (true);
-		}
-
-		if (last != obj.mtime) {
-			seen = {};
-			last = obj.mtime;
-		}
-
-		seen[obj.name] = true;
-		again = true;
-		nprocessed++;
-
-		return (false);
-	};
-
-	var ondir = function (err, res) {
-		checkError(err);
-
-		res.on('error', function (err) {
-			checkError(err);
+	var readDir = function () {
+		var ls = new ThothListStream({
+			manta: client,
+			path: thoth.path,
+			time: !!time,
+			filter: filter
 		});
 
-		res.on('object', function (obj) {
-			if (processed(obj))
-				return;
+		ls.on('error', checkError);
 
-			if (!obj.name.match(thoth.unindexed + '$'))
-				return;
+		ls.pipe(mapStream(function (ent, push, next) {
+			var add = function (what) {
+				var path = mod_path.join(thoth.path, what);
+				if (seen.hasOwnProperty(path))
+					return;
+				seen[path] = true;
+				push(path);
+			};
 
-			add(obj.name.substr(0,
-			    obj.name.indexOf(thoth.unindexed)) + '/info.json');
-		});
+			switch (ent.type) {
+			case 'object':
+				if (!endsWith(ent.name, thoth.unindexed)) {
+					break;
+				}
+				add(ent.name.substr(0, ent.name.indexOf(
+				    thoth.unindexed)) + '/info.json');
+				break;
 
-		res.on('directory', function (dir) {
-			if (processed(dir))
-				return;
-
-			if (dir.name.length != thoth.hashlen)
-				return;
-
-			add(dir.name + '/info.json');
-		});
-
-		res.on('end', function () {
-			if (!done && again) {
-				again = false;
-				lsopts.query.marker = last;
-				client.addJobKey(id, keys, function (err) {
-					checkError(err);
-					keys = [];
-					client.ls(thoth.path, lsopts, ondir);
-				});
-				return;
+			case 'directory':
+				if (ent.name.length !== thoth.hashlen) {
+					break;
+				}
+				add(mod_path.join(ent.name, 'info.json'));
+				break;
 			}
 
-			client.addJobKey(id, keys, { end: true },
-			    function (err) {
+			next();
+
+		})).pipe(batchStream(250)).pipe(forEachStream(function (keys,
+		    next) {
+			client.addJobKey(id, keys, function (err) {
+				checkError(err);
+				next();
+			});
+
+		}, function (err, res) {
+			checkError(err);
+			client.endJob(id, function (err) {
 				checkError(err);
 				jobWait(client, id, jobOutput(client, alldone));
 			});
-		});
+		}));
 	};
 
 	/*
@@ -1903,17 +1913,117 @@ handlers.index = function (client, argv)
 		client.createJob(job, function (err, jobid) {
 			checkError(err);
 			status('created job ' + (id = jobid));
-			client.ls(thoth.path, lsopts, ondir);
+			readDir();
 		});
 	});
 
 	var alldone = function () {
-		status('indexed ' + nprocessed + ' dumps');
+		status('indexed ' + Object.keys(seen).length + ' dumps');
 		process.exit(0);
 	};
 }
 
-handlers.clean = function (client, argv)
+/*
+ * In the past, there were some bugs in the thoth upload path that caused
+ * corruption in the "info.json" object.  The "psargs" property in this
+ * object could contain unescaped double quotes, causing the file to fail to
+ * parse.  A second stage of the upload process wrote the "properties"
+ * property to that same object, appending it as a second (well-formed) JSON
+ * object in the same file.
+ *
+ * This function will either correct this specific pathology and return an
+ * object, or fail and return null.
+ */
+function
+pathologyOne(input)
+{
+	mod_assert.equal(typeof (input), 'string');
+	var lines = input.split('\n');
+
+	if (lines.length < 10) {
+		/*
+		 * This file has too few lines to have been generated by this
+		 * bug.
+		 */
+		return (null);
+	}
+
+	if (lines[0] !== '{') {
+		/*
+		 * This is probably not a JSON object.
+		 */
+		return (null);
+	}
+
+	/*
+	 * Split out the first JSON object within the input:
+	 */
+	var data = '';
+	var o;
+	while (lines.length > 0) {
+		var l = lines.shift();
+		var m;
+
+		/*
+		 * Attempt to match a JSON property key-value pair on its
+		 * own line:
+		 */
+		if ((m = l.match(/^\s*"([a-z]+)": *"(.*)",$/))) {
+			if (m[1] === 'psargs' && m[2].indexOf('"') !== -1) {
+				/*
+				 * This is the "psargs" property that requires
+				 * correct quote escaping.
+				 */
+				data += '  "' + m[1] + '": "' +
+				    m[2].replace(/"/g, '\\"') + '",\n';
+				continue;
+			}
+		}
+
+		/*
+		 * Attempt to parse the input we have seen so far.  If parsing
+		 * is successful, we have isolated the first object in the file.
+		 */
+		data += l + '\n';
+		try {
+			o = JSON.parse(data);
+			break;
+		} catch (ex) {
+		}
+	}
+
+	/*
+	 * Check the parsed object to ensure it has an _empty_ "properties"
+	 * object.  We also make sure we have just two more entries in the
+	 * array: the real "properties" object, and the final blank.
+	 */
+	if (!o || !o.hasOwnProperty('properties') ||
+	    Object.keys(o.properties).length > 0 || lines.length !== 2) {
+		return (null);
+	}
+
+	var o2;
+	try {
+		o2 = JSON.parse(lines.join('\n'));
+	} catch (ex) {
+		return (null);
+	}
+	var k2 = Object.keys(o2);
+
+	/*
+	 * The second object in the file must have _only_ a "properties"
+	 * property, and nothing else.
+	 */
+	if (k2.length !== 1 || k2[0] !== 'properties') {
+		return (null);
+	}
+
+	o.properties = o2.properties;
+
+	return (o);
+}
+
+handlers.scrub = function (client, argv)
 {
 	var again = false, done = false, time = undefined;
 	var lsopts = { query: { sort: 'mtime' }, limit: 1000 };
@@ -1923,107 +2033,214 @@ handlers.clean = function (client, argv)
 	var keys = [];
 	var nprocessed = 0, total = 0;
 	var parallelism = 10, outstanding = 0;
+	var filter, indexes = false;
 
-	if (argv.length != 1)
-		fatal('expected age at which to start cleaning');
+	for (var i = 0; i < argv.length; i++) {
+		if (argv[i].indexOf('=') !== -1) {
+			filter = argv[i].split('=');
+		} else if (argv[i] === 'indexes') {
+			indexes = true;
+		} else {
+			fatal('scrub: unexpected argument "' + argv[i] + '"');
+		}
+	}
 
-	var filter = argv[0].split('=');
-
-	if (filter.length != 2 || filter[0] != 'mtime')
+	if (!filter || filter.length !== 2 || filter[0] != 'mtime')
 		fatal('age must be specified as "mtime=age"');
 
 	time = parseAge(filter[1]);
-
-	status('cleaning artifacts from before ' +
+	status('scrubbing artifacts from before ' +
 	    (new Date(time * 1000)).toISOString());
 
-	var unlink = function (cb) {
-		do {
-			if (keys.length == 0) {
-				if (nprocessed) {
-					status('cleaned ' + nprocessed +
-					    ' artifacts ending with ' +
-					    oldest.name + ' at ' +
-					    oldest.mtime);
-					total += nprocessed;
-					nprocessed = 0;
-				}
+	/*
+	 * When "time" ordering is specified, directory entries are retrieved
+	 * from Manta in reverse order; i.e., from the newest entry to the
+	 * oldest entry.  Adding the "reverse" option reverse this sort,
+	 * starting our directory list at the _oldest_ file and walking
+	 * forwards in time.
+	 */
+	var ls = new ThothListStream({
+		manta: client,
+		path: thoth.path,
+		type: 'object',
+		time: true,
+		reverse: true,
+		filter: function (ent, stop) {
+			var ts = ((new Date(ent.mtime)).valueOf() / 1000);
 
-				cb();
-				return;
+			mod_assert.ok(ent.type === 'object');
+
+			/*
+			 * We do _not_ want to clean dumps that were created
+			 * _after_ the cutoff time.  As our walk is moving
+			 * forwards in time, we can also stop walking dumps
+			 * here.
+			 */
+			if (ts >= time) {
+				stop();
+				return (false);
 			}
 
-			outstanding++;
+			/*
+			 * Only objects which match the indexing artefact
+			 * pattern are eligible.
+			 */
+			if (!ent.name.match(thoth.unindexed + '$')) {
+				return (false);
+			}
 
-			client.unlink(thoth.path + '/' + keys.shift(),
-			    function (err) {
-				outstanding--;
-				checkError(err);
-				nprocessed++;
-				if (outstanding == 0)
-					unlink(cb);
-			});
-		} while (outstanding < parallelism);
-	};
+			return (true);
+		}
+	});
 
-	var ondir = function (err, res) {
+	ls.on('error', checkError);
+
+	ls.pipe(mapStream(function (ent, push, next) {
+		var hash = ent.name.replace(new RegExp(thoth.unindexed + '$'),
+		    '');
+		mod_assert.notEqual(hash, ent.name);
+
+		if (hash.length !== thoth.hashlen) {
+			fatal('invalid hash: ' + hash);
+		}
+
+		var tc = {
+			tc_hash: hash,
+			tc_ent: ent,
+			tc_primary: null,
+			tc_primary_raw: null,
+			tc_unindexed: null,
+			tc_errors: [],
+			tc_need_primary_write: false
+		};
+
+		/*
+		 * Collect the contents of the thoth JSON file.
+		 */
+		var hashpath = mod_path.join(thoth.path, hash, 'info.json');
+		var hashdata = '';
+		var instr = client.createReadStream(hashpath);
+		instr.on('error', checkError);
+		instr.on('readable', function () {
+			var d;
+			while ((d = instr.read()) !== null) {
+				hashdata += d.toString();
+			}
+		});
+		instr.on('end', function () {
+			tc.tc_primary_raw = hashdata;
+			try {
+				tc.tc_primary = JSON.parse(hashdata);
+			} catch (ex) {
+				if ((tc.tc_primary = pathologyOne(
+				    hashdata)) !== null) {
+					tc.tc_need_primary_write = true;
+				} else {
+					tc.tc_errors.push('object "' +
+					    hashpath + '" has invalid JSON: ' +
+					    ex.toString());
+				}
+			}
+			push(tc);
+			next();
+		});
+	})).pipe(mapStream(function (tc, push, next) {
+		/*
+		 * Collect the contents of the unindexed JSON file.
+		 */
+		var path = mod_path.join(tc.tc_ent.parent, tc.tc_ent.name);
+		var instr = client.createReadStream(path);
+		var data = '';
+		instr.on('error', checkError);
+		instr.on('readable', function () {
+			var d;
+			while ((d = instr.read()) !== null) {
+				data += d.toString();
+			}
+		});
+		instr.on('end', function () {
+			try {
+				tc.tc_unindexed = JSON.parse(data);
+			} catch (ex) {
+				if ((tc.tc_unindexed = pathologyOne(data)) ===
+				    null) {
+					tc.tc_errors.push('object "' + path +
+					    '" has invalid JSON: ' +
+					    ex.toString());
+				}
+			}
+			push(tc);
+			next();
+		});
+	})).pipe(forEachStream(function (tc, next) {
+		var header = false;
+		var printHeader = function () {
+			if (header)
+				return;
+			header = true;
+
+			console.log('dump %s (mtime %s):', tc.tc_hash,
+			    tc.tc_ent.mtime);
+		};
+
+		if (tc.tc_errors.length > 1) {
+			printHeader();
+			console.log();
+			for (var i = 0; i < tc.tc_errors.length; i++) {
+				var tce = tc.tc_errors[i];
+
+				console.log('\terror: %s', tce);
+			}
+			console.log();
+			next();
+			return;
+		}
+
+		if (tc.tc_need_primary_write) {
+			printHeader();
+			console.log('\tinfo.json needs to be flushed from ' +
+			    'reconstructed copy');
+		}
+
+		mod_assert.ok(tc.tc_primary);
+		mod_assert.equal(typeof (tc.tc_primary), 'object');
+		mod_assert.ok(tc.tc_unindexed);
+		mod_assert.equal(typeof (tc.tc_unindexed), 'object');
+
+		if (mod_jsprim.deepEqual(tc.tc_primary, tc.tc_unindexed)) {
+			if (indexes) {
+				/*
+				 * The "UUID-unindexed.json" file is the
+				 * same as the primary "info.json" file, and
+				 * may be removed.
+				 */
+				printHeader();
+				console.log('\tindexing artefact is safe ' +
+				    'to remove');
+			}
+		} else {
+			/*
+			 * The primary and the unindexed copy of the JSON are
+			 * _not_ identical.  Emit the differences between the
+			 * two objects:
+			 */
+			printHeader();
+			console.log();
+			console.log('DIFF: --- unindexed +++ primary');
+			var od = jsondiff.objectDiff(tc.tc_unindexed,
+			    tc.tc_primary);
+			jsondiff.printDiff(od, 'object');
+		}
+
+		if (header)
+			console.log();
+		next();
+
+	}, function (err) {
 		checkError(err);
-
-		res.on('error', function (err) {
-			checkError(err);
-		});
-
-		res.on('object', function (obj) {
-			if (obj.mtime == lsopts.query.marker) {
-				if (seen[obj.name])
-					return;
-			}
-
-			if (last != obj.mtime) {
-				seen = {};
-				last = obj.mtime;
-			}
-
-			seen[obj.name] = true;
-			again = true;
-
-			if ((new Date(obj.mtime).valueOf() / 1000) > time)
-				return;
-
-			if (!obj.name.match(thoth.unindexed + '$'))
-				return;
-
-			oldest = { mtime: obj.mtime, name: obj.name };
-			keys.push(obj.name);
-		});
-
-		res.on('directory', function (dir) {
-			if (last != dir.mtime) {
-				seen = {};
-				last = dir.mtime;
-			}
-
-			again = true;
-		});
-
-		res.on('end', function () {
-			unlink(function () {
-				if (!again) {
-					status('cleaned ' + total +
-					     ' indexing artifacts');
-					process.exit(0);
-					return;
-				}
-
-				again = false;
-				lsopts.query.marker = last;
-				client.ls(thoth.path, lsopts, ondir);
-			});
-		});
-	};
-
-	client.ls(thoth.path, lsopts, ondir);
-}
+		process.exit(0);
+	}));
+};
 
 handlers.object = function (client, argv)
 {
@@ -2386,13 +2603,6 @@ var setAnalyzer = function (client, exec, cb, opts)
 
 	cmd += '	' + exec + '\n';
 	cmd += 'fi\n';
-
-	if (!Readable) {
-		/*
-		 * If we're on node 0.8, pull in streams2 explicitly.
-		 */
-		Readable = require('readable-stream/readable');
-	}
 
 	/*
 	 * Create a simple Readable to mput our string.
