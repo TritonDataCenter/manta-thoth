@@ -80,7 +80,8 @@ var thoth = {
 		    usage: 'print information about the specified dump(s)' },
 		{ token: 'ls', params: '[[dump]]', disconnected: true,
 		    usage: 'list dumps matching the specification' },
-		{ token: 'object', params: '[dump]', disconnected: true,
+		{ token: 'object', params: '[dump]',
+		    disconnected: true, unconfigured: true,
 		    usage: 'print object name for specified dump(s)' },
 		{ token: 'report', params: '[dump] [agg]', disconnected: true,
 		    usage: 'report on dumps matching the specification' },
@@ -3522,6 +3523,23 @@ var main = function ()
 	thoth.analyzers = thoth.path + '/' + thoth.analyzers;
 	thoth.logs = thoth.path + '/' + thoth.logs;
 	thoth.index = thoth.path + '/' + thoth.index;
+
+	/*
+	 * Before we attempt to autoconfigure ourselves, see if we have a
+	 * command that allows us to run unconfigured.
+	 */
+	for (i = 0; i < thoth.cmds.length; i++) {
+		if (argv[2] != thoth.cmds[i].token)
+			continue;
+
+		if (!thoth.cmds[i].unconfigured)
+			break;
+
+		argv = argv.slice(3, argv.length);
+		check(thoth.cmds[i], argv, usage);
+		handlers[thoth.cmds[i].token].call(this, client, argv);
+		return;
+	}
 
 	configure(function (client, src) {
 		if (thoth.db.authKey == 'none')
