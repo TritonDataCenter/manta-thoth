@@ -581,7 +581,27 @@ var check = function (which)
 			failed(which, 'info', stdout, stderr, error);
 		} else {
 			output(current(which) + ' is ' + dump[1]);
-			exists(which);
+
+			var info = JSON.parse(stdout.toString());
+
+			if (info.properties && info.properties.sysinfo) {
+				exists(which);
+			} else {
+				/*
+				 * We have a dump, but we're missing a sysinfo
+				 * property; set it.
+				 */
+				output(dump[1] + ' is missing ' +
+				    '\'sysinfo\' property');
+
+				if (options['dry-run'].value) {
+					output('would set missing property');
+					exists(which);
+				} else {
+					setprop(which);
+					return;
+				}
+			}
 		}
 
 		check(which);
