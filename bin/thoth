@@ -85,7 +85,7 @@ var thoth = {
 		    usage: 'print object name for specified dump(s)' },
 		{ token: 'report', params: '[dump] [agg]', disconnected: true,
 		    usage: 'report on dumps matching the specification' },
-		{ token: 'set', params: '[dump] [prop] [val]',
+		{ token: 'set', params: '[dump] [prop] [[val]]',
 		    usage: 'set prop to val for the specified dump(s)' },
 		{ token: 'unset', params: '[dump] [prop]',
 		    usage: 'unset prop for the specified dump(s)' },
@@ -2451,6 +2451,9 @@ var argToInfo = function (client, arg, cb, bypass)
 
 var dumpToInfoPath = function (dump)
 {
+	if (typeof(dump) == 'string')
+		return (dump);
+
 	return ([ dump.name, 'info.json'].join('/'));
 }
 
