@@ -1696,6 +1696,7 @@ handlers.debug = function (client, argv)
 	var mlogin = mod_path.dirname(require.resolve('manta')) +
 	    '/../bin/mlogin';
 	var analyzer = undefined;
+	var nodePath = undefined;
 
 	var analyzerCmd = function (args) {
 		var cmd = 'export THOTH_ANALYZER=/var/tmp/' + analyzer + '\n';
@@ -1758,6 +1759,8 @@ handlers.debug = function (client, argv)
 
 		if (analyzer) {
 			cmd += analyzerCmd(args);
+		} else if (nodePath) {
+			cmd += 'mdb /assets' + nodePath + ' $MANTA_INPUT_FILE';
 		} else {
 			cmd += 'mdb $MANTA_INPUT_FILE';
 		}
@@ -1767,6 +1770,9 @@ handlers.debug = function (client, argv)
 			    '-s', dummy.phases[0].assets[0],
 			    '-c', '/assets/' + asset,
 			    '--memory=2048' ]);
+
+			if (nodePath)
+				args = args.concat(['-s', nodePath]);
 
 			var child = mod_child.spawn(mlogin, args,
 			    { stdio: 'inherit' });
@@ -1781,6 +1787,12 @@ handlers.debug = function (client, argv)
 			});
 		}, { loadv8: analyzer ? false : true });
 	};
+
+	var nodeIndex = argv.length > 2 ? argv.indexOf('-p') : -1;
+	if (nodeIndex !== -1) {
+		nodePath = argv[nodeIndex + 1];
+		argv.splice(nodeIndex, 2);
+	}
 
 	if (argv.length > 1 && argv[argv.length - 1].indexOf('=') == -1)
 		analyzer = argv.pop();
