@@ -90,6 +90,12 @@ postprocess it:
     thoth: waiting for completion of job da3c0bf5-b04f-445b-aee7-af43ea3d17c0
     thoth: job da3c0bf5-b04f-445b-aee7-af43ea3d17c0 completed in 0h0m2s
 
+To upload the program that generated the core or crash dump, pass the `-p` argument. This will associate the program file with the core or crash dump and load it in MDB whenever `debug` is executed.
+
+```
+$ thoth upload core.19972 node
+```
+
 ### info
 
 Returns the JSON blob associated with the specified dump.
