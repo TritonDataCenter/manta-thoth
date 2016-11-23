@@ -3499,8 +3499,15 @@ var configure = function (cb)
 	client = connect();
 
 	client.get(object, function (err, stream, res) {
-		if (err && err.code == 'ResourceNotFound')
-			return (cb(client, 'from source'));
+		if (err) {
+			if (err.code === 'ResourceNotFound') {
+				cb(client, 'from source');
+				return;
+			}
+
+			fatal('could not load thoth configuration (' +
+			    object + ') from Manta: ' + err);
+		}
 
 		var output = '';
 
