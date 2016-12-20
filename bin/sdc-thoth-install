@@ -115,8 +115,8 @@ if [ ! -d $base ]; then
 fi
 
 PATH=$base/bin:$PATH
-PATH=$base/node_modules/thoth/bin:$PATH
-PATH=$base/node_modules/thoth/node_modules/manta/bin:$PATH
+PATH=$base/node_modules/manta-thoth/bin:$PATH
+PATH=$base/node_modules/manta-thoth/node_modules/manta/bin:$PATH
 PATH=$base/node_modules/smartdc/bin:$PATH
 export PATH
 
