@@ -14,7 +14,7 @@ further data movement.
 
 # Setup
 
-As with the [node-manta](http://github.com/node-manta) CLI tools, you will
+As with the [node-manta](https://github.com/joyent/node-manta) CLI tools, you will
 need to set Manta environment variables that match your Joyent Manta account:
 
     $ export MANTA_KEY_ID=`ssh-keygen -l -f ~/.ssh/id_rsa.pub | awk '{print $2}' | tr -d '\n'`
