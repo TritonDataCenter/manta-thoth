@@ -952,7 +952,7 @@ dumpsFromSpec = function (argv, opts, cb)
 {
 	var i;
 	var illegal = undefined;
-	var filters = [], time = undefined, undefs = [];
+	var filters = [], time = undefined, undefs = [], limit = undefined;
 
 	var deref = function (dump, field) {
 		var f = field.split('.'), rval = dump;
@@ -963,19 +963,13 @@ dumpsFromSpec = function (argv, opts, cb)
 		return (rval);
 	};
 
-	var exfilter = function (arg) {
-		var p = field.split('properties.');
+	var derefOne = function (dump, field) {
+		var f = field.split('.'), rval = dump;
 
-		if (p.length == 2) {
-			return (function (dump) {
-				return (dump('properties')
-				    (p[1]).hasFields(arg));
-			});
-		}
+		while (f.length > 1)
+			rval = rval(f.shift());
 
-		return (function (dump) {
-			return (dump.hasFields(arg));
-		});
+		return (rval);
 	};
 
 	var eqfilter = function (field, match) {
@@ -1002,6 +996,22 @@ dumpsFromSpec = function (argv, opts, cb)
 		});
 	};
 
+	var missing = function (field) {
+		var f = field.split('.');
+
+		if (f.length == 1) {
+			return (function (dump) {
+				return (dump.hasFields(field).not());
+			});
+		}
+
+		var last = f.pop();
+
+		return (function (dump) {
+			return (deref(dump, f.join('.')).hasFields(last).not());
+		});
+	};
+
 	for (i = 0; i < argv.length; i++) {
 		var filter = argv[i].split('=');
 
@@ -1013,20 +1023,29 @@ dumpsFromSpec = function (argv, opts, cb)
 			continue;
 		}
 
+		if (filter[0] == 'limit') {
+			limit = parseInt(filter[1], 10);
+			continue;
+		}
+
 		/*
-		 * This is one million percent ghetto, but if we see a '*',
-		 * we'll turn it into a proper regular expression.
+		 * This is one million percent ghetto, but we permit some
+		 * crude globbing:  if we see '*' or '?', we'll turn it into
+		 * a proper regular expression.
 		 */
-		if (filter[1].indexOf('*') != -1) {
+		if (filter[1].indexOf('*') != -1 ||
+		    filter[1].indexOf('?') != -1) {
+			var re;
+
 			/*JSSTYLED*/
-			illegal = filter[1].match(/([.+?^=!:${}()|[\]\/\\])/);
+			illegal = filter[1].match(/([.+^=!:${}()|[\]\/\\])/);
 
 			if (illegal)
 				break;
 
-			var re = '^' +
-			    /*JSSTYLED*/
-			    filter[1].replace(/\*/g, '(.|\\n)*') + '$';
+			/*JSSTYLED*/
+			re = '^' + filter[1].replace(/\*/g, '(.|\\n)*') + '$';
+			re = re.replace(/\?/g, '(.|\\n)');
 
 			if (filter[0] == 'stack') {
 				filters.push(stackfilter(framematch(re)));
@@ -1034,7 +1053,7 @@ dumpsFromSpec = function (argv, opts, cb)
 				filters.push(matchfilter(filter[0], re));
 			}
 		} else if (filter[1] == 'undefined') {
-			undefs.push(filter[0]);
+			undefs.push(missing(filter[0]));
 		} else {
 			/*JSSTYLED*/
 			illegal = filter[1].match(/["']/);
@@ -1073,11 +1092,8 @@ dumpsFromSpec = function (argv, opts, cb)
 		for (i = 0; i < filters.length; i++)
 			rval = rval.filter(filters[i]);
 
-		for (i = 0; i < undefs.length; i++) {
-			var f = {};
-			f[undefs[i]] = null;
-			rval = rval.filter(f, { default: true });
-		}
+		for (i = 0; i < undefs.length; i++)
+			rval = rval.filter(undefs[i], { default: true });
 
 		if (opts.fields) {
 			if (opts.group) {
@@ -1099,6 +1115,9 @@ dumpsFromSpec = function (argv, opts, cb)
 				rval = rval.pluck(opts.fields);
 			}
 		}
+
+		if (limit)
+			rval = rval.limit(limit);
 
 		rval.run(conn, function (err, cursor) {
 			if (err)
@@ -1969,6 +1988,7 @@ pathologyOne(input)
 		 * Attempt to match a JSON property key-value pair on its
 		 * own line:
 		 */
+		/*JSSTYLED*/
 		if ((m = l.match(/^\s*"([a-z]+)": *"(.*)",$/))) {
 			if (m[1] === 'psargs' && m[2].indexOf('"') !== -1) {
 				/*
@@ -1976,6 +1996,7 @@ pathologyOne(input)
 				 * correct quote escaping.
 				 */
 				data += '  "' + m[1] + '": "' +
+				    /*JSSTYLED*/
 				    m[2].replace(/"/g, '\\"') + '",\n';
 				continue;
 			}
@@ -2451,7 +2472,7 @@ var argToInfo = function (client, arg, cb, bypass)
 
 var dumpToInfoPath = function (dump)
 {
-	if (typeof(dump) == 'string')
+	if (typeof (dump) == 'string')
 		return (dump);
 
 	return ([ dump.name, 'info.json'].join('/'));
