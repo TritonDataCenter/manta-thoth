@@ -10,7 +10,6 @@ var mod_fs = require('fs');
 var util = require('util');
 var mod_crypto = require('crypto');
 var mod_bunyan = require('bunyan');
-var mod_restify = require('restify');
 var mod_manta = require('manta');
 var mod_zlib = require('zlib');
 var mod_child = require('child_process');
@@ -3455,8 +3454,7 @@ var connect = function ()
 	opts.log = mod_bunyan.createLogger({
 		name: mod_path.basename(process.argv[1]),
 		level: (process.env.LOG_LEVEL || 'info'),
-		stream: process.stderr,
-		serializers: mod_restify.bunyan.serializers
+		stream: process.stderr
 	});
 
 	return (mod_manta.createBinClient(opts));
