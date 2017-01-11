@@ -4,13 +4,13 @@
 	"version": "0.2.2",
 	"author": "Joyent (joyent.com)",
 	"dependencies": {
-		"manta": "1.6.0",
+		"manta": "3.1.1",
 		"ctype": ">=0.5.2",
 		"sprintf": "0.1.1",
 		"bunyan": "0.21.3",
 		"jsprim": "^0.8.0",
 		"restify": "2.5.0",
-		"rethinkdb": "2.0.0",
+		"rethinkdb": "2.3.3",
 		"readable-stream": ">=1.1.9"
 	},
 	"bin": {
