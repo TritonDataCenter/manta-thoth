@@ -21,9 +21,9 @@ function onexit
 {
 	if [[ -f $backup ]]; then
 		cp $backup $hosts
-		rm $backup	
+		rm $backup
 	fi
-	
+
 	[[ $1 -ne 0 ]] || exit 0
 	fatal "error exit status $1"
 }
@@ -72,7 +72,7 @@ if [[ -z $MANTA_URL ]]; then
 		MANTA_URL=https://$server
 		insecure=
 	fi
-	
+
 	export MANTA_URL
 fi
 
@@ -92,7 +92,7 @@ if [[ -z $SDC_URL ]]; then
 		if ( ! ping $server 1>&2 ); then
 			fatal "could not ping $server"
 		fi
-	fi	
+	fi
 
 	SDC_URL=https://$server
 	export SDC_URL
@@ -194,8 +194,13 @@ cat > $postboot <<EOF
 
 set -o xtrace
 
-useradd -c "Thoth user" -s /bin/bash -d $home $user
+# We hardcode the thoth user to uid 100 because SmartOS (illumos) reserves
+# 0-99 for itself, and if operators have added an external directory such
+# as LDAP, just assigning the next uid for thoth will create a conflict the
+# next time an external user is added to the directory.
+useradd -u 100 -c "Thoth user" -s /bin/bash -d $home $user
 passwd -u $user
+chown -R $user $home
 cat $crontab | su thoth -c crontab
 
 #
@@ -212,7 +217,7 @@ chmod +x $postboot
 echo Creating SMF manifest ...
 
 #
-# Now create the manifest 
+# Now create the manifest
 #
 mkdir -p `dirname $manifest` || true
 cat > $manifest <<EOF
