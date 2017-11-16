@@ -2482,28 +2482,30 @@ var setV8 = function (opts)
 	var cmd = '';
 
 	cmd = 'if [[ `cat $THOTH_INFO | json cmd` == "node" ]]; then\n';
-	cmd += '	THOTH_V8_32=mdb_v8_ia32.so\n';
-	cmd += '	THOTH_V8_64=mdb_v8_amd64.so\n';
-	cmd += '	THOTH_V8_DIR=/root/mdb\n';
-	cmd += '	THOTH_V8_DIR_64=/root/mdb/amd64\n';
-	cmd += '	THOTH_V8_LATEST=/Joyent_Dev/public/mdb_v8/latest\n';
-	cmd += '\n';
-	cmd += '	if [[ ! -d $THOTH_V8_DIR ]]; then\n';
-	cmd += '		mkdir $THOTH_V8_DIR\n';
-	cmd += '		mkdir $THOTH_V8_DIR_64\n';
+	cmd += '	FILE_STR="$(file $THOTH_DUMP)"\n';
+	cmd += '	MDB_PROC=/usr/lib/mdb/proc\n';
+	cmd += '	MDB_V8=mdb_v8_ia32.so\n';
+	cmd += '	MDB_V8_DIR=/root/mdb\n';
+	cmd += '	MDB_V8_LATEST=/Joyent_Dev/public/mdb_v8/latest\n';
+	cmd += '	if [[ $FILE_STR == *"ELF 64-bit"* ]]; then\n';
+	cmd += '		MDB_PROC=/usr/lib/mdb/proc/amd64\n';
+	cmd += '		MDB_V8=mdb_v8_amd64.so\n';
+	cmd += '		MDB_V8_DIR=/root/mdb/amd64\n';
 	cmd += '	fi\n';
 	cmd += '\n';
-	cmd += '	if [[ ! -f $THOTH_V8_DIR/v8.so ]]; then\n';
-	cmd += '		THOTH_V8_LATEST=`mget -q ' +
+	cmd += '	if [[ ! -d $MDB_V8_DIR ]]; then\n';
+	cmd += '		mkdir -p $MDB_V8_DIR\n';
+	cmd += '	fi\n';
+	cmd += '\n';
+	cmd += '	if [[ ! -f $MDB_V8_DIR/v8.so ]]; then\n';
+	cmd += '		MDB_V8_LATEST=`mget -q ' +
 	    thoth.v8 + '`\n';
-	cmd += '		mget -q $THOTH_V8_LATEST/$THOTH_V8_32 ' +
-	    '> $THOTH_V8_DIR/v8.so\n';
-	cmd += '		mget -q $THOTH_V8_LATEST/$THOTH_V8_64 ' +
-	    '> $THOTH_V8_DIR_64/v8.so\n';
+	cmd += '		mget -q $MDB_V8_LATEST/$MDB_V8 ' +
+	    '> $MDB_V8_DIR/v8.so\n';
 	cmd += '	fi\n';
 	cmd += '\n';
 	cmd += '	if [[ ! -f ~/.mdbrc ]]; then\n';
-	cmd += '		echo "::set -L /root/mdb:/usr/lib/mdb/proc" ' +
+	cmd += '		echo "::set -L $MDB_V8_DIR:$MDB_PROC" ' +
 	    '> ~/.mdbrc\n';
 
 	if (opts && opts.loadv8)
