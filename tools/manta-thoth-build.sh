@@ -3,7 +3,7 @@
 set -o errexit
 
 job=$(
-mjob create --close -m 'set -o errexit ;
+mjob create --close -r 'set -o errexit ;
 cd /var/tmp ;
 git clone https://github.com/joyent/manta-thoth ;
 cd manta-thoth ;

@@ -11,10 +11,9 @@ release: thoth-$(UNAME)-$(VER).tar.gz
 publish: release
 	./tools/publish.sh "$(VER)"
 
-thoth-$(UNAME)-$(VER).tar.gz: node_modules
+thoth-$(UNAME)-$(VER).tar.gz:
 	./tools/build-release.sh
 
 clean:
 	rm -rf node_modules opt
 	rm -f thoth-$(UNAME)-$(VER).tar.gz
-	rm -rf node-v*-$(UNAME)-*

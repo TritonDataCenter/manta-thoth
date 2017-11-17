@@ -20,6 +20,10 @@ node_dir="node-v${node_ver}-${uname}-${node_arch}"
 node_tar="${node_dir}.tar.gz"
 node_location="https://nodejs.org/download/release/v${node_ver}"
 
+base="$PWD"
+proto=$(mktemp -d -t thoth-build.XXXXXX)
+cd "$proto"
+
 curl -#LOC - "${node_location}/${node_tar}"
 tar zxf "$node_tar"
 
@@ -29,6 +33,11 @@ if [[ $uname == sunos ]]; then
     cp /opt/local/gcc47/lib/libstdc++.so.6 opt/custom/thoth/lib
     cp /opt/local/gcc47/lib/libgcc_s.so.1 opt/custom/thoth/lib
 fi
-cp -r node_modules opt/custom/thoth
+(
+    cd opt/custom/thoth
+    npm install smartdc thoth
+)
 
 tar zcf "$tar" opt
+mv "$tar" "$base"
+#rm -rf "$proto"
