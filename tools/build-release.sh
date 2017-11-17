@@ -35,7 +35,7 @@ if [[ $uname == sunos ]]; then
 fi
 (
     cd opt/custom/thoth
-    npm install smartdc thoth
+    npm install smartdc manta-thoth
 )
 
 tar zcf "$tar" opt
