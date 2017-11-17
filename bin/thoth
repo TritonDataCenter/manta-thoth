@@ -1777,7 +1777,13 @@ handlers.debug = function (client, argv)
 		if (analyzer) {
 			cmd += analyzerCmd(args);
 		} else {
-			cmd += 'mdb $MANTA_INPUT_FILE';
+			/*
+			 * LIBPROC_INCORE_ELF=1 prevents us from loading
+			 * whatever node binary happens to be in $PATH. This is
+			 * necessary when debugging cores that do not match the
+			 * bitness of the node binary found in $PATH.
+			 */
+			cmd += 'LIBPROC_INCORE_ELF=1 mdb $MANTA_INPUT_FILE';
 		}
 
 		setAnalyzer(client, cmd, function (asset) {
