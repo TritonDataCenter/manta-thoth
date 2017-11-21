@@ -1298,6 +1298,64 @@ var putCore = function (client, file, stat, base, cb)
 	});
 };
 
+var processProgram = function (client, base, program, cb)
+{
+	var tmp = '/tmp/tmp.json';
+	var json = '/tmp/new.json';
+
+	var cmd = 'cat > ' + tmp + ' <<EOF\n';
+
+	cmd += '{ "program": "' + program + '" }\nEOF\n';
+
+	cmd += 'cat $MANTA_INPUT_FILE ' + tmp + ' | json --deep-merge > ' +
+	    json + ';';
+	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;';
+	cmd += jobExecThoth(json) + ' || ' +
+	    'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
+	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
+
+	jobOneKey(client, mod_path.join(base, '/info.json'), cmd, cb, jobSetThoth);
+}
+
+var uncompressProgram = function (client, stat, base, program, cb)
+{
+	cmd = 'gunzip -cd $MANTA_INPUT_FILE > /var/tmp/gunzip.$$ ;'
+	cmd += 'mput -f /var/tmp/gunzip.$$ ' + program;
+
+	status('creating job to uncompress ' + mod_path.basename(base));
+	jobOneKey(client, program + '.gz', cmd,
+			function () { processProgram(client, base, program, cb); },
+	    function (job) { job.phases[0].disk = 128; });
+};
+
+var putProgram = function (client, file, stat, base, cb)
+{
+	var stream = mod_fs.createReadStream(file);
+	var program = base + '/' + mod_path.basename(file);
+	var gzip = mod_zlib.createGzip();
+
+	status('uploading ' + mod_path.basename(program) + ' to ' +
+	    mod_path.basename(base));
+
+	progressBar(program, stream, stat);
+
+	pipe = stream.pipe(gzip);
+	pipe.pause();
+
+	var opts = {
+		copies: 1,
+		headers: { 'max-content-length': stat.size }
+	};
+
+	stream.on('open', function () {
+		client.put(program + '.gz', gzip, opts, function (err) {
+			checkError(err);
+
+			uncompressProgram(client, stat, base, program, cb);
+		});
+	});
+};
+
 var processCrash = function (client, stat, base, dump, cb)
 {
 	var mdb = function (cmd) {
@@ -1442,6 +1500,29 @@ var openDump = function (name, cb, failed)
 	}
 }
 
+var openProgram = function (name, cb, failed)
+{
+	var fd, file = { name: name };
+	var stat;
+	var sum = mod_crypto.createHash('md5');
+	var path = [ thoth.path ], digest;
+
+	try {
+		fd = mod_fs.openSync(name, 'r');
+	} catch (err) {
+		if (!failed)
+			fatal('couldn\'t open "' + name + '": ' + err);
+		return (failed());
+	}
+
+	file.stat = mod_fs.fstatSync(fd);
+
+	mod_fs.closeSync(fd);
+	path.push(file.digest = sum.digest('hex'));
+	file.base = path.join('/');
+	cb(file);
+}
+
 var infoGet = function (client, dump, cb, bypass)
 {
 	argToInfo(client, dump, function (object, err, stream, res) {
@@ -1464,19 +1545,36 @@ var infoGet = function (client, dump, cb, bypass)
 	}, bypass);
 }
 
-handlers.upload = function (client, argv)
+handlers.upload = function (client, argv, program)
 {
 	put = {
 		crash: putCrash,
 		core: putCore
 	};
 
-	var next = function () {
+	var pArgIndex = argv.length > 2 ? argv.indexOf('-p') : -1;
+	if (pArgIndex !== -1) {
+		program = argv[pArgIndex + 1];
+		argv.splice(pArgIndex, 2);
+	}
+
+	var finish = function () {
 		if (argv.length == 1)
 			process.exit(0);
 
-		handlers.upload(client, argv.slice(1, argv.length));
-	};
+		handlers.upload(client, argv.slice(1, argv.length), program);
+	}
+
+	var next = function (dump) {
+		if (!program) {
+			return finish();
+		}
+
+		openProgram(program, function (file) {
+			status('creating program ' + file.digest);
+			putProgram(client, file.name, file.stat, dump.base, finish);
+		});
+	}
 
 	openDump(argv[0], function (file) {
 		status('creating ' + file.digest);
@@ -1484,7 +1582,9 @@ handlers.upload = function (client, argv)
 		client.mkdirp(file.base, function (err) {
 			checkError(err);
 			put[file.type](client,
-			    file.name, file.stat, file.base, next);
+			    file.name, file.stat, file.base, function () {
+						next(file);
+					});
 		});
 	});
 }
@@ -1714,6 +1814,7 @@ handlers.debug = function (client, argv)
 	var mlogin = mod_path.dirname(require.resolve('manta')) +
 	    '/../bin/mlogin';
 	var analyzer = undefined;
+	var nodePath = undefined;
 
 	var analyzerCmd = function (args) {
 		var cmd = 'export THOTH_ANALYZER=/var/tmp/' + analyzer + '\n';
@@ -1776,6 +1877,8 @@ handlers.debug = function (client, argv)
 
 		if (analyzer) {
 			cmd += analyzerCmd(args);
+		} else if (nodePath || dump.program) {
+			cmd += 'mdb /assets' + (nodePath || dump.program) + ' $MANTA_INPUT_FILE';
 		} else {
 			/*
 			 * LIBPROC_INCORE_ELF=1 prevents us from loading
@@ -1792,6 +1895,12 @@ handlers.debug = function (client, argv)
 			    '-c', '/assets/' + asset,
 			    '--memory=2048' ]);
 
+			if (nodePath) {
+				args = args.concat(['-s', nodePath]);
+			} else if (dump.program) {
+				args = args.concat(['-s', dump.program]);
+			}
+
 			var child = mod_child.spawn(mlogin, args,
 			    { stdio: 'inherit' });
 
@@ -1805,6 +1914,12 @@ handlers.debug = function (client, argv)
 			});
 		}, { loadv8: analyzer ? false : true });
 	};
+
+	var nodeIndex = argv.length > 2 ? argv.indexOf('-p') : -1;
+	if (nodeIndex !== -1) {
+		nodePath = argv[nodeIndex + 1];
+		argv.splice(nodeIndex, 2);
+	}
 
 	if (argv.length > 1 && argv[argv.length - 1].indexOf('=') == -1)
 		analyzer = argv.pop();
