@@ -9,6 +9,7 @@ set -o errexit
 
 node_ver='0.10.38'
 thoth_ver=$(json -f package.json version)
+gcc_ver=$(pkg_info -E gcc4? | cut -d - -f 1)
 uname=$(uname -s | tr "[:upper:]" "[:lower:]")
 case "$uname" in
     darwin) node_arch='x64';;
@@ -27,16 +28,17 @@ cd "$proto"
 curl -#LOC - "${node_location}/${node_tar}"
 tar zxf "$node_tar"
 
+export PATH="${PWD}/${node_dir}/bin:$PATH"
+export LD_LIBRARY_PATH="/opt/local/${gcc_ver}/lib/"
+
 mkdir -p opt/custom/thoth/{bin,lib}
 cp "${node_dir}/bin/node" opt/custom/thoth/bin
 if [[ $uname == sunos ]]; then
-    cp /opt/local/gcc47/lib/libstdc++.so.6 opt/custom/thoth/lib
-    cp /opt/local/gcc47/lib/libgcc_s.so.1 opt/custom/thoth/lib
+    cp "/opt/local/${gcc_ver}/lib/libstdc++.so.6" opt/custom/thoth/lib
+    cp "/opt/local/${gcc_ver}/lib/libgcc_s.so.1" opt/custom/thoth/lib
 fi
-(
-    cd opt/custom/thoth
-    npm install smartdc manta-thoth
-)
+npm install smartdc "$base"
+mv node_modules opt/custom/thoth/node_modules
 
 tar zcf "$tar" opt
 mv "$tar" "$base"
