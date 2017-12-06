@@ -10,13 +10,14 @@ set -o errexit
 node_ver='0.10.38'
 thoth_ver=$(json -f package.json version)
 gcc_ver=$(pkg_info -E gcc4? | cut -d - -f 1)
+thoth_commit=$(git rev-parse --short HEAD)
 uname=$(uname -s | tr "[:upper:]" "[:lower:]")
 case "$uname" in
     darwin) node_arch='x64';;
     sunos) node_arch='x86';;
     *) printf 'Sorry, not ready for you'; exit 1;;
 esac
-tar="thoth-${uname}-${thoth_ver}.tar.gz"
+tar="thoth-${uname}-${thoth_ver}-${thoth_commit}.tar.gz"
 node_dir="node-v${node_ver}-${uname}-${node_arch}"
 node_tar="${node_dir}.tar.gz"
 node_location="https://nodejs.org/download/release/v${node_ver}"
