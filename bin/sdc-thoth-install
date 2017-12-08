@@ -106,7 +106,7 @@ if [ ! -d $base ]; then
 	tarball=/var/tmp/thoth.$$.tar.gz
 	staged=/tmp/thoth.$$.tar.gz
 	echo "Downloading thoth ..."
-	curl -k $MANTA_URL/thoth/public/thoth.tar.gz > $staged 2>&4
+	curl -k $MANTA_URL/thoth/public/thoth-sunos-latest.tar.gz > $staged 2>&4
 	echo "Downloading thoth to compute nodes ..."
 	sdc-oneachnode -a -g $staged -d /var/tmp 1>&2
 	echo "Installing thoth on compute nodes ..."
