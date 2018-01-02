@@ -161,6 +161,7 @@ crontab=$home/crontab
 postboot=$base/bin/postboot
 manifest=/opt/custom/smf/thoth.xml
 runthoth=$home/run-thoth
+thothwrapper=$base/bin/thoth
 
 echo Creating crontab ...
 
@@ -170,24 +171,46 @@ EOF
 
 echo Creating `basename $runthoth` script ...
 
-cat > $runthoth <<EOF
+cat > "$runthoth" <<"EOF"
+#!/bin/bash
 #
 # This script is run out of a cron job.  By default, it does nothing (it
 # runs with --dry-run); this option should be removed to get sdc-thoth to
 # actually start uploading.
 #
-source ~/.bashrc
 
-log=\`date +log/%Y/%m/%d/%H/%M/sdc-thoth.out\`
-mkdir -p \$HOME/\`dirname \$log\`
-sdc-thoth --dry-run > \$log
+if [[ $LOGNAME == thoth ]]
+    thoth_home=$HOME
+else
+    thoth_home=$(getent passwd thoth | awk -F: '{print $6}')
+fi
+source "${thoth_home:?}/.bashrc"
 
-mlog=/\$MANTA_USER/stor/thoth/logs/\$THOTH_UUID/\$log
-mmkdir -p \`dirname \$mlog\`
-mput -f \$log \$mlog
+[[ -z $thoth_home ]]; then
+    printf 'Unable to find thoth $HOME.\n'
+    printf 'Is thoth set up properly?\n'
+    exit 1
+fi
+
+log=$(date +log/%Y/%m/%d/%H/%M/sdc-thoth.out)
+mkdir -p "${HOME}/$(dirname $log)
+sdc-thoth --dry-run > "$log"
+
+mlog="/${MANTA_USER}/stor/thoth/logs/${THOTH_UUID}/${log}"
+mmkdir -p "$(dirname $mlog)"
+mput -f "$log" "$mlog"
 EOF
 
 chmod +x $runthoth
+ln -s /opt/custom/thoth/bin/run-thoth ../home/thoth/run-thoth
+
+cat > $thothwrapper <<EOF
+#!/bin/bash
+
+$base/bin/node $base/node_modules/.bin/thoth "${@}"
+EOF
+
+chmod +x $thothwrapper
 
 cat > $postboot <<EOF
 #!/bin/bash
