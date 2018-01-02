@@ -25,23 +25,20 @@ need to set Manta environment variables that match your Joyent Manta account:
 
 ## Introduction
 
-Thoth consists primarily of the ```thoth``` utility,
-a veneer on Manta that
+Thoth consists primarily of the `thoth` utility, a veneer on Manta that
 generates a _hash_ unique to a core or crash dump, uploads that
-dump to a directory under ```$MANTA_USER/stor/thoth```, and offers
+dump to a directory under `$MANTA_USER/stor/thoth`, and offers
 facilities to list, filter and (most importantly) debug those dumps
-in place.  Most ```thoth``` subcommands operate on a _dump specification_:
+in place.  Most `thoth` subcommands operate on a _dump specification_:
 a dump's hash (or substring thereof) or a space-delimited set of
 constraints based on its properties.  A constraint consists of
 a property name, a single equals sign, and the value (or globbed expression)
-to match.  For example, to list
-all crash dumps from the node  95SY9R1
+to match.  For example, to list all crash dumps from the node  95SY9R1
 
     $ thoth ls type=crash node=95SY9R1
 
-The special token ```undefined``` denotes a property that isn't set.
-For example, to
-list all dumps that begin with ```svc``` that don't have a ticket:
+The special token `undefined` denotes a property that isn't set.
+For example, to list all dumps that begin with `svc` that don't have a ticket:
 
     $ thoth ls cmd=svc* ticket=undefined
     thoth: creating job to list
@@ -61,13 +58,12 @@ list all dumps that begin with ```svc``` that don't have a ticket:
 
 ## Subcommands
 
-```thoth``` operates by specifying a subcommand.  Many subcommands kick
+`thoth` operates by specifying a subcommand.  Many subcommands kick
 off Manta jobs, and the job ID is presented in the command line
-(allowing Manta tools like [```mjob```](https://github.com/joyent/node-manta/blob/master/docs/man/mjob.md) to be used to observe or debug behavior).
+(allowing Manta tools like [`mjob`](https://github.com/joyent/node-manta/blob/master/docs/man/mjob.md) to be used to observe or debug behavior).
 In general, success is denoted by an exit status 0 and failure by an
 exit status of 1 -- but some subcommands can exit with other status
-codes (notably, ```info```).
-The following subcommands are supported:
+codes (notably, `info`).  The following subcommands are supported:
 
 ### upload
 
@@ -143,7 +139,7 @@ a particular ticket:
     ]
     ...
 
-Note that for the ```info``` subcommand, a dump specification can also consist
+Note that for the `info` subcommand, a dump specification can also consist
 of a local dump -- in which case the hash of that dump will be determined
 locally, and the corresponding dump information will be retrieved (if it
 exists).  This is a useful way of determining if a dump has already been
@@ -179,8 +175,8 @@ This can be used to automate uploads of dumps.
 ### report
 
 Gives a JSON report of the given property across the given dump specification.
-For example, here's a report of ```platform``` for cores from the
-command ```svc.startd```:
+For example, here's a report of `platform` for cores from the
+command `svc.startd`:
 
     $ thoth report cmd=svc.startd platform
     {
@@ -190,8 +186,8 @@ command ```svc.startd```:
 
 ### set
 
-Sets a user property, which will appear in the ```properties``` field of the
-JSON blob retrieved via ```info```.  The value for the property can be
+Sets a user property, which will appear in the `properties` field of the
+JSON blob retrieved via `info`.  The value for the property can be
 a string:
 
     $ thoth set 086d664357716ae7 triage bmc
@@ -212,7 +208,7 @@ Or specified as a JSON object via stdin:
 ### unset
 
 Unsets a user property.  Once a property is unset, it can be searched for
-in a dump specification by using the special token ```undefined```.
+in a dump specification by using the special token `undefined`.
 
 ### ticket
 
@@ -226,32 +222,32 @@ Unsets a ticket on a dump.
 ### analyze
 
 On the specified dumps, runs the specified analyzer, as uploaded via the
-```analyzer``` subcommand.  An analyzer is a shell script that runs in the
+`analyzer` subcommand.  An analyzer is a shell script that runs in the
 context of a Manta job on a dump.  The following shell variables are made
 available in the context of an analyzer:
 
-* ```$THOTH_DUMP```: The path of the dump.  (This is set to the same
-  value as ```$MANTA_INPUT_FILE```.)
+* `$THOTH_DUMP`: The path of the dump.  (This is set to the same
+  value as `$MANTA_INPUT_FILE`.)
 
-* ```$THOTH_INFO```: The path of a local file that contains the JSON
+* `$THOTH_INFO`: The path of a local file that contains the JSON
   info for the dump.  The [json](https://github.com/trentm/json) utility
   exists in the context of a Manta job, and this may be used to parse this
   file.
 
-* ```$THOTH_TYPE```: The type of the dump (either ```crash``` or ```core```).
+* `$THOTH_TYPE`: The type of the dump (either `crash` or `core`).
 
-* ```$THOTH_NAME```: The full name (that is, hash) of the dump.
+* `$THOTH_NAME`: The full name (that is, hash) of the dump.
 
-* ```thoth_set```: A shell function that will set the specified property
+* `thoth_set`: A shell function that will set the specified property
   to the specified value or, if no value is specified, standard input.
 
-* ```thoth_unset```: A shell function that will unset the specified property
+* `thoth_unset`: A shell function that will unset the specified property
   on the dump being analyzed.
 
-* ```thoth_ticket```: A shell function that will set the ticket on the
+* `thoth_ticket`: A shell function that will set the ticket on the
   dump being analyzed to the ticket specified.
 
-* ```thoth_unticket```: A shell function that will unset the ticket on the
+* `thoth_unticket`: A shell function that will unset the ticket on the
   dump being analyzed.
 
 For example, here is an analyzer that looks for a particular stack
@@ -284,8 +280,8 @@ pattern and -- if it is found -- diagnoses it to be a certain ticket.
     thoth_ticket OS-2359
     echo $THOTH_NAME: successfully diagnosed as OS-2359
 
-Here's an analyzer that sets an ```fmri``` property to be that of the
-```SMF_FMRI``` environment variable:
+Here's an analyzer that sets an `fmri` property to be that of the
+`SMF_FMRI` environment variable:
 
     if [[ "$THOTH_TYPE" != "core" ]]; then
         exit 0
@@ -300,11 +296,11 @@ Here's an analyzer that sets an ```fmri``` property to be that of the
     echo $THOTH_NAME: $fmri
 
 The output of analyzers is aggregated and displayed upon completion
-of ```analyze```.  
+of `analyze`.
 
 #### Debugging analyzers
 
-To debug and interactively develop analyzers, use ```thoth debug``` and
+To debug and interactively develop analyzers, use `thoth debug` and
 specify both the dump and the analyzer:
 
     % thoth debug 004a8bf33b2cd204903e46830a4f3b23 MANTA-1817-diagnose
@@ -319,18 +315,18 @@ specify both the dump and the analyzer:
 
 This results in an interactive shell whereby one can interactively
 edit the specified analyzer by editing the file referred to by
-```$THOTH_ANALYZER``` and can test the analyzer by running 
-```thoth_analyze```.  When the shell exits successfully (that is,
-an exit of 0), the contents of the file pointed to by ```$THOTH_ANALYZER```
+`$THOTH_ANALYZER` and can test the analyzer by running
+`thoth_analyze`.  When the shell exits successfully (that is,
+an exit of 0), the contents of the file pointed to by `$THOTH_ANALYZER`
 will be written to the specified analyzer.
 
 #### Testing analyzers
 
-Once an analyzer works on a single dump using ```thoth debug```,
+Once an analyzer works on a single dump using `thoth debug`,
 it is recommended to run and debug the new analyzer on a single
-dump by specifying the dump's complete hash to ```analyze```; once the analyzer
+dump by specifying the dump's complete hash to `analyze`; once the analyzer
 is working, it can be run on a larger number of dumps by specifying a
-broader dump specification to ```analyze```.
+broader dump specification to `analyze`.
 
 ### analyzer
 
@@ -354,21 +350,21 @@ Manta paths that may be retrieved with mget.
 
 # Thoth and SmartDataCenter
 
-For users of Joyent's SmartDataCanter, ```sdc-thoth``` allows for Thoth to
-be integrated and run on a regular basis from the head-node.  ```sdc-thoth```
+For users of Joyent's SmartDataCanter, `sdc-thoth` allows for Thoth to
+be integrated and run on a regular basis from the head-node.  `sdc-thoth`
 operates by querying compute nodes for dumps and their
 corresponding hashes, checking those hashes against Thoth, and uploading
 any missing dumps through the head-node and into Thoth.
 
 ## Installation
 
-Running ```sdc-thoth-install``` as root on the head-node will install the
-latest binary on the head-node in ```/opt/custom```, create a ```thoth```
-user and create the necessary SMF manifest as well as a ```crontab``` that
-runs ```sdc-thoth``` in dry-run mode.  You can also download and execute
+Running `sdc-thoth-install` as root on the head-node will install the
+latest binary on the head-node in `/opt/custom`, create a `thoth`
+user and create the necessary SMF manifest as well as a `crontab` that
+runs `sdc-thoth` in dry-run mode.  You can also download and execute
 this directly from Manta (with the obvious caveats that you should really
-never just pipe the output of ```curl``` to ```bash``` running
-as ```root```):
+never just pipe the output of `curl` to `bash` running
+as `root`):
 
     # curl -k https://us-east.manta.joyent.com/thoth/public/sdc-thoth-install | bash
 
