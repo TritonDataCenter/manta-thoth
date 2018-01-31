@@ -21,6 +21,12 @@ need to set Manta environment variables that match your Joyent Manta account:
     $ export MANTA_URL=https://us-east.manta.joyent.com
     $ export MANTA_USER=bcantrill
 
+You may also need to set your `THOTH_USER` environment variable if you are using
+a shared Thoth installation. For example, if your shared Thoth installation
+uses the 'thoth' Manta user:
+
+    $ export THOTH_USER=thoth
+
 # Running Thoth
 
 ## Introduction
@@ -371,7 +377,7 @@ as `root`):
 ## License
 
 The MIT License (MIT)
-Copyright (c) 2013 Joyent
+Copyright (c) 2018 Joyent
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
