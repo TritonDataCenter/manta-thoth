@@ -106,7 +106,7 @@ if [ ! -d $base ]; then
 	tarball=/var/tmp/thoth.$$.tar.gz
 	staged=/tmp/thoth.$$.tar.gz
 	echo "Downloading thoth ..."
-	curl -k $MANTA_URL/thoth/public/thoth-sunos-latest.tar.gz > $staged 2>&4
+	curl -# -k $MANTA_URL/thoth/public/thoth-sunos-latest.tar.gz > $staged 2>&4
 	echo "Downloading thoth to compute nodes ..."
 	sdc-oneachnode -a -g $staged -d /var/tmp 1>&2
 	echo "Installing thoth on compute nodes ..."
@@ -179,21 +179,21 @@ cat > "$runthoth" <<"EOF"
 # actually start uploading.
 #
 
-if [[ $LOGNAME == thoth ]]
+if [[ $LOGNAME == thoth ]]; then
     thoth_home=$HOME
 else
     thoth_home=$(getent passwd thoth | awk -F: '{print $6}')
 fi
 source "${thoth_home:?}/.bashrc"
 
-[[ -z $thoth_home ]]; then
+if [[ -z $thoth_home ]]; then
     printf 'Unable to find thoth $HOME.\n'
     printf 'Is thoth set up properly?\n'
     exit 1
 fi
 
 log=$(date +log/%Y/%m/%d/%H/%M/sdc-thoth.out)
-mkdir -p "${HOME}/$(dirname $log)
+mkdir -p "${HOME}/$(dirname $log)"
 sdc-thoth --dry-run > "$log"
 
 mlog="/${MANTA_USER}/stor/thoth/logs/${THOTH_UUID}/${log}"
@@ -202,12 +202,12 @@ mput -f "$log" "$mlog"
 EOF
 
 chmod +x $runthoth
-ln -s /opt/custom/thoth/bin/run-thoth ../home/thoth/run-thoth
+ln -s ../home/thoth/run-thoth /opt/custom/thoth/bin/run-thoth
 
 cat > $thothwrapper <<EOF
 #!/bin/bash
 
-$base/bin/node $base/node_modules/.bin/thoth "${@}"
+$base/bin/node $base/node_modules/.bin/thoth "\${@}"
 EOF
 
 chmod +x $thothwrapper
@@ -295,5 +295,5 @@ while ! chown -R $user $home ; do
 	sleep 1
 done
 
-echo "Done; edit ~/`basename $runthoth` as user $user to enable sdc-thoth"
+echo "Done; edit $runthoth as user $user to enable sdc-thoth"
 

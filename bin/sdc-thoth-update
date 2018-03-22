@@ -60,7 +60,7 @@ fi
 tarball=/var/tmp/thoth.$$.tar.gz
 staged=/tmp/thoth.$$.tar.gz
 echo "Downloading thoth update ..."
-curl -k $MANTA_URL/thoth/public/thoth-sunos-latest.tar.gz > $staged 2>&4
+curl -# -k $MANTA_URL/thoth/public/thoth-sunos-latest.tar.gz > $staged 2>&4
 echo "Updating thoth ..."
 cd / ; gzcat $staged | tar xf - ; rm $staged 1>&2
 echo "Done"

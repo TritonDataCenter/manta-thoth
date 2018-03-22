@@ -67,12 +67,12 @@ fi
 tarball=/var/tmp/thoth.$$.tar.gz
 staged=/tmp/thoth.$$.tar.gz
 echo "Downloading thoth ..."
-curl -k $MANTA_URL/thoth/public/thoth-sunos-latest.tar.gz > $staged 2>&4
+curl -# -k $MANTA_URL/thoth/public/thoth-sunos-latest.tar.gz > $staged 2>&4
 echo "Downloading thoth to compute nodes ..."
 sdc-oneachnode -a -g $staged -d /var/tmp 1>&2
 echo "Installing thoth on compute nodes ..."
 sdc-oneachnode -a "cd / ; gzcat $tarball | tar xf - ; rm $tarball" 1>&2
-sdc-oneachnode -c -gX /opt/custom/thoth/bin/thoth -d /opt/custom/thoth/bin/
+sdc-oneachnode -c -X -g /opt/custom/thoth/bin/thoth -d /opt/custom/thoth/bin/
 sdc-oneachnode -a 'chmod +x /opt/custom/thoth/bin/thoth'
 rm $staged
 echo "Done"
