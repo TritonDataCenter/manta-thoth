@@ -947,11 +947,75 @@ jobExecThoth = function (what)
 	    'load ' + what);
 }
 
-dumpsFromSpec = function (argv, opts, cb)
+dumpsFromStdin = function (client, opts, cb)
+{
+	process.stdin.resume();
+	process.stdin.setEncoding('utf8');
+
+	var lines;
+	var lingeringLine = '';
+	var dumps = [];
+
+	var processLine = function (l) { if (l.length > 0) dumps.push(l); };
+
+	if (!client)
+		client = connect();
+
+	status('reading dump identifiers from stdin');
+
+	process.stdin.on('data', function (chunk) {
+		lines = chunk.split(/\s+/);
+
+		lines[0] = lingeringLine + lines[0];
+		lingeringLine = lines.pop();
+
+		lines.forEach(processLine);
+	});
+
+	process.stdin.on('end', function () {
+		var all = [];
+
+		processLine(lingeringLine);
+
+		if (dumps.length == 0)
+			fatal('"stdin" specified, but no dumps provided');
+
+		dumps.forEach(function (dump) {
+			infoGet(client, dump, function (info) {
+				all.push(info);
+
+				if (all.length == dumps.length)
+					cb(all);
+			}, true);
+		});
+	});
+}
+
+dumpsFromSpec = function (client, argv, opts, cb)
 {
 	var i;
 	var illegal = undefined;
 	var filters = [], time = undefined, undefs = [], limit = undefined;
+
+	/*
+	 * This is a little isntall-ish, but we allow several different ways
+	 * of specifying that dump UUIDs should be read from stdin.
+	 */
+	if (argv[0] == 'dump=stdin' || argv[0] == 'dumps=stdin' ||
+	    argv[0] == 'name=stdin') {
+		if (argv.length > 1) {
+			fatal('"stdin" cannot be used with ' +
+			    'subsequent specifications');
+		}
+
+		if (opts.group) {
+			fatal('"stdin" cannot be used as a dump ' +
+			    'specification on reports');
+		}
+
+		dumpsFromStdin(client, opts, cb);
+		return;
+	}
 
 	var deref = function (dump, field) {
 		var f = field.split('.'), rval = dump;
@@ -1212,9 +1276,11 @@ processCore = function (client, stat, base, dump, cb)
 	cmd += 'echo \'\t"type": "core",\' >> ' + json + '; ';
 	cmd += 'echo \'\t"properties": {}\' >> ' + json + '; ';
 	cmd += 'echo } >> ' + json + '; ';
-	cmd += 'mput -f ' + json + ' ' + base + '/info.json';
+	cmd += 'mput -f ' + json + ' ' + base + '/info.json ; ';
+	cmd += jobExecThoth(json);
 
 	job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
+	jobSetThoth(job);
 
 	status('creating job to process ' + mod_path.basename(base));
 
@@ -1342,9 +1408,11 @@ var processCrash = function (client, stat, base, dump, cb)
 	cmd += 'echo \'\t"type": "crash",\' >> ' + json + '; ';
 	cmd += 'echo \'\t"properties": {}\' >> ' + json + '; ';
 	cmd += 'echo } >> ' + json + '; ';
-	cmd += 'mput -f ' + json + ' ' + base + '/info.json';
+	cmd += 'mput -f ' + json + ' ' + base + '/info.json ; ';
+	cmd += jobExecThoth(json);
 
 	job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
+	jobSetThoth(job);
 
 	status('creating job to process ' + mod_path.basename(base));
 
@@ -1586,7 +1654,7 @@ handlers.ls = function (client, argv)
 		}
 	};
 
-	dumpsFromSpec(argv, { fields: obj }, function (dumps) {
+	dumpsFromSpec(client, argv, { fields: obj }, function (dumps) {
 		for (i = 0; i < dumps.length; i++) {
 			if (!dumps[i].time)
 				dumps[i].time = 0;
@@ -1651,7 +1719,7 @@ handlers.info = function (client, argv)
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], output);
 	} else {
-		dumpsFromSpec(argv, {}, output);
+		dumpsFromSpec(client, argv, {}, output);
 	}
 }
 
@@ -1812,7 +1880,7 @@ handlers.debug = function (client, argv)
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], debug);
 	} else {
-		dumpsFromSpec(argv, { fields: [ 'dump' ] }, debug);
+		dumpsFromSpec(client, argv, { fields: [ 'dump' ] }, debug);
 	}
 }
 
@@ -2304,7 +2372,8 @@ handlers.report = function (client, argv)
 		}
 	}
 
-	dumpsFromSpec(argv, { fields: fields, group: true }, function (dumps) {
+	dumpsFromSpec(client, argv,
+	    { fields: fields, group: true }, function (dumps) {
 		var i, j, output = {}, val;
 
 		if (fields.length == 0) {
@@ -2664,13 +2733,41 @@ var setAnalyzer = function (client, exec, cb, opts)
 	});
 }
 
+var analyzerIsDcmd = function (analyzer)
+{
+	/*
+	 * If our analyzer begins with "::" or "$" or contains within it an
+	 * mdb verb (namely, "/", "=" or "::"), we assume it to be an mdb
+	 * dcmd.
+	 */
+	return (analyzer.indexOf('::') != -1 || analyzer.indexOf('$') == 0 ||
+	    analyzer.indexOf('/') > 0 || analyzer.indexOf('=') > 0);
+}
+
 var runAnalyzer = function (client, keys, analyzer)
 {
-	var cmd = 'cat $THOTH_ASSET /assets/' + analyzer + ' | bash\n';
+	var cmd;
+	var dcmd = false;
+
+	if (analyzerIsDcmd(analyzer)) {
+		status('executing mdb dcmd "' + analyzer + '"');
+		cmd = 'echo $THOTH_NAME: `echo \'' + analyzer +
+		    '\' | mdb $THOTH_DUMP 2> /dev/null`';
+		dcmd = true;
+	} else {
+		if (analyzer.indexOf('/') != 0)
+			analyzer = thoth.analyzers + '/' + analyzer;
+
+		cmd = 'cat $THOTH_ASSET /assets/' + analyzer + ' | bash\n';
+	}
 
 	setAnalyzer(client, cmd, function (asset) {
 		var preflight = function (job) {
-			job.phases[0].assets = [ asset, analyzer ];
+			job.phases[0].assets = [ asset ];
+
+			if (!dcmd)
+				job.phases[0].assets.push(analyzer);
+
 			job.phases.push({ exec: 'cat', type: 'reduce' });
 			jobSetThoth(job);
 		};
@@ -2755,7 +2852,7 @@ handlers.set = function (client, argv, sysprop)
 	if (i < argv.length)
 		argv.pop();
 
-	dumpsFromSpec(argv, { fields: [ 'name' ] }, function (dumps) {
+	dumpsFromSpec(client, argv, { fields: [ 'name' ] }, function (dumps) {
 		for (dump in dumps)
 			keys.push([ dumps[dump].name, 'info.json' ].join('/'));
 
@@ -2780,7 +2877,7 @@ handlers.unset = function (client, argv, sysprop)
 		return;
 	}
 
-	dumpsFromSpec(argv, { fields: [ 'name' ] }, function (dumps) {
+	dumpsFromSpec(client, argv, { fields: [ 'name' ] }, function (dumps) {
 		for (dump in dumps)
 			keys.push([ dumps[dump].name, 'info.json' ].join('/'));
 
@@ -2824,6 +2921,9 @@ handlers.analyzer = function (client, argv)
 
 	if (argv.length != 1)
 		fatal('analyzers must be named');
+
+	if (analyzerIsDcmd(argv[0]))
+		fatal('analyzer name may not contain mdb verbs or commands');
 
 	analyzer = thoth.analyzers + '/' + argv[0];
 	msg = 'analyzer \'' + argv[0] + '\'';
@@ -2936,9 +3036,6 @@ handlers.analyze = function (client, argv)
 	if (!analyzer)
 		fatal('need to specify an analyzer');
 
-	if (analyzer.indexOf('/') != 0)
-		analyzer = thoth.analyzers + '/' + analyzer;
-
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
 		infoGet(client, argv[0], function (output) {
 			runAnalyzer(client, [ output.dump ], analyzer);
@@ -2947,7 +3044,7 @@ handlers.analyze = function (client, argv)
 		return;
 	}
 
-	dumpsFromSpec(argv, { fields: [ 'dump' ] }, function (dumps) {
+	dumpsFromSpec(client, argv, { fields: [ 'dump' ] }, function (dumps) {
 		var dump, keys = [];
 
 		for (dump in dumps)

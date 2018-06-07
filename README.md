@@ -14,8 +14,8 @@ further data movement.
 
 # Setup
 
-As with the [node-manta](https://github.com/joyent/node-manta) CLI tools, you will
-need to set Manta environment variables that match your Joyent Manta account:
+As with the [node-manta](https://github.com/joyent/node-manta) CLI tools,
+you will need to set Manta environment variables that match your Manta account:
 
     $ export MANTA_KEY_ID=`ssh-keygen -l -f ~/.ssh/id_rsa.pub | awk '{print $2}' | tr -d '\n'`
     $ export MANTA_URL=https://us-east.manta.joyent.com
@@ -27,40 +27,173 @@ uses the 'thoth' Manta user:
 
     $ export THOTH_USER=thoth
 
+If `$THOTH_USER` is set, `$MANTA_USER` must have read and write access
+to `/$THOTH_USER/stor/thoth`.
+
+While all of its canonical data resides in Manta, Thoth uses
+[RethinkDB](https://www.rethinkdb.com) for metadata caching.
+If setting up  a new `$THOTH_USER`,
+[RethinkDB should be installed](https://www.rethinkdb.com/docs/install/)
+on a server, and then pointed to via `$THOTH_USER/stor/thoth/config.json`
+as described below.
+
+Once RethinkDB is installed, the `authKey` should be set.
+On versions of RethinkDB of 2.3 or more recent, this can be done via the
+Data Explorer from the RethinkDB web interface:
+
+    r.db('rethinkdb').table('users').get('admin').update({password:'I<3dumps!'})
+
+(Once this has been done, it's wise to disable web administration by
+uncommenting the `no-http-admin` line in the RethinkDB instances's configuration file.)
+
+To initialize thoth, first store the RethinkDB credentials in Manta at
+`$THOTH_USER/stor/thoth/config.json`:
+
+    {
+            "db": { "host": "my-thoth-server", "authKey": "I<3dumps!" }
+    }
+
+Then, run `thoth init`:
+
+    $ thoth init
+    thoth: using database at my-thoth-server:28015 (configured from Manta)
+    thoth: created database 'bcantrill'
+    thoth: created table 'dumps'
+    thoth: created table 'analyzers'
+    thoth: created index 'time'
+
+Now you can upload your first core dump:
+
+    $ thoth upload ./core.bc.24388
+    thoth: using database at my-thoth-server:28015 (configured from Manta)
+    thoth: creating 76998f82a450a8914037e4da838ec609
+    thoth: uploading core.bc.24388 to 76998f82a450a8914037e4da838ec609
+    thoth: core.bc.24388 [=======================>] 100%   3.83MB 
+    thoth: creating job to uncompress 76998f82a450a8914037e4da838ec609
+    thoth: adding key to job 42b9feff-56d5-482a-b12b-da2099fd44ed
+    thoth: processing job 42b9feff-56d5-482a-b12b-da2099fd44ed
+    thoth: waiting for completion of job 42b9feff-56d5-482a-b12b-da2099fd44ed
+    thoth: job 42b9feff-56d5-482a-b12b-da2099fd44ed completed in 0h0m14s
+    thoth: creating job to process 76998f82a450a8914037e4da838ec609
+    thoth: adding key to job 3e434caf-0544-6e89-ed71-8fa1630adcde
+    thoth: processing 76998f82a450a8914037e4da838ec609
+    thoth: waiting for completion of job 3e434caf-0544-6e89-ed71-8fa1630adcde
+    thoth: job 3e434caf-0544-6e89-ed71-8fa1630adcde completed in 0h0m8s
+
+This dump should appear in `thoth ls` output:
+
+    $ thoth ls
+    thoth: using database at my-thoth-server:28015 (configured from Manta)
+    NAME             TYPE  TIME                NODE/CMD         TICKET  
+    76998f82a450a891 core  2015-12-04T13:10:26 bc               -       
+
 # Running Thoth
 
 ## Introduction
 
 Thoth consists primarily of the `thoth` utility, a veneer on Manta that
-generates a _hash_ unique to a core or crash dump, uploads that
-dump to a directory under `$MANTA_USER/stor/thoth`, and offers
-facilities to list, filter and (most importantly) debug those dumps
-in place.  Most `thoth` subcommands operate on a _dump specification_:
-a dump's hash (or substring thereof) or a space-delimited set of
-constraints based on its properties.  A constraint consists of
-a property name, a single equals sign, and the value (or globbed expression)
-to match.  For example, to list all crash dumps from the node  95SY9R1
+generates a _hash_ unique to a core or crash dump, uploads that dump to a
+directory under `$MANTA_USER/stor/thoth`, loads the metadata associated
+with the dump into a RethinkDB-based querying database, and offers facilities
+to list, filter and (most importantly) debug those dumps in place.
+
+### Dump specifications
+
+Most `thoth` subcommands operate on a _dump specification_: a dump's hash
+(or substring thereof) or a space-delimited set of constraints based on its
+properties.  A constraint consists of a property name, a single equals sign,
+and the value (or globbed expression) to match.  For example, to list all
+crash dumps from the node 95SY9R1:
 
     $ thoth ls type=crash node=95SY9R1
 
-The special token `undefined` denotes a property that isn't set.
-For example, to list all dumps that begin with `svc` that don't have a ticket:
+#### Special token: `mtime`
 
-    $ thoth ls cmd=svc* ticket=undefined
-    thoth: creating job to list
-    thoth: created job 3f5f8e94-6fbe-400b-b7d5-a666a2012066
-    thoth: waiting for completion of job 3f5f8e94-6fbe-400b-b7d5-a666a2012066
-    thoth: job 3f5f8e94-6fbe-400b-b7d5-a666a2012066 completed in 0h0m26s
-    DUMP             TYPE  TIME                NODE/CMD         TICKET
-    8eaa35bb82c20716 core  2013-06-26T17:01:29 svc.startd       -
-    06880c6f00a2ab47 core  2013-06-26T18:04:56 svc.startd       -
-    8df0e4e9d9a67581 core  2013-06-26T18:04:57 svc.startd       -
-    9a1ec403c6e78b95 core  2013-06-26T19:04:24 svc.startd       -
-    ddaca0c9fbae4ff6 core  2013-06-26T19:23:41 svc.startd       -
-    b791a00a788c9d59 core  2013-06-27T01:26:05 svc.configd      -
-    3dae4877554defc4 core  2013-07-06T07:02:38 svc.configd      -
-    7866184c07c23510 core  2013-07-11T04:47:56 svc.startd       -
-    e407e3820d3af9ab core  2013-07-11T04:47:56 svc.startd       -
+The special token `mtime` denotes how long ago the dump was uploaded,
+with equality denoting recency.  For example, to list all of the dumps
+uploaded in the last 6 hours:
+
+    $ thoth ls mtime=6h 
+    thoth: using database at thoth-db:28015 (configured from Manta)
+    NAME             TYPE  TIME                NODE/CMD         TICKET
+    e1f5422b892d9394 core  2017-11-17T19:34:29 java             -     
+    c04110bc8190a84e core  2017-11-17T19:39:52 node             -     
+    b9379570b4a9a224 core  2017-11-17T19:39:52 node             -     
+    5f1171019ce419cb core  2017-11-17T19:51:01 node             -     
+    713f9e8b48559acd core  2017-11-17T19:55:57 node             -     
+    d91719939666de40 core  2017-11-17T20:05:57 node             -     
+    beaa65d3548ac96f core  2017-11-17T20:23:19 pg_prefaulter    -     
+    5841ba86a2b198be core  2017-11-17T20:53:06 node             -     
+    3d8921ce583dff68 core  2017-11-17T20:54:06 node             -     
+    34a8661c049456b1 core  2017-11-17T21:14:09 node             -     
+    6d75f1cd30898f48 core  2017-11-17T21:31:19 node             -     
+    cc2328f7d8a6c4ad core  2017-11-17T21:41:15 node             -     
+    b0b6f4ed9ab418ce core  2017-11-17T21:51:20 node             -     
+    5d64e695505d15c9 core  2017-11-17T22:11:18 node             -     
+    96d2271d81e4cd63 core  2017-11-17T22:21:17 node             -     
+    71aff9c315553b03 core  2017-11-17T23:31:14 node             -     
+    72f18495c7f54841 core  2017-11-18T00:21:17 node             -     
+
+#### Special token: `limit`
+
+The special token `limit` denotes that the number of dumps specified
+should be limited to the parameter, allowing a smaller number of 
+dumps to be examined.  (Exactly which dumps will be returned is unspecified.)
+For example, to get the ID of at most five dumps from commands that begin with
+"system":
+
+    $ thoth info cmd=systemd* limit=5 | json -ga id
+    thoth: using database at thoth-db:28015 (configured from Manta)
+    00103a107b5db8f79ebc77782b707d07
+    0071f6c50b39f1a917ba21a957f43e3f
+    0021e9c447815c1f7a91e1af2672543b
+    00d7ae803e01365798654c4dbeea5b28
+    012c3f942d0b7de6b7dbc8eed8798b86
+
+#### Special token: `undefined`
+
+The special token `undefined` denotes a property that isn't set.  For
+example, to list all dumps that were added in the last one hundred days that
+begin with `svc` that don't have a ticket:
+
+    $ thoth ls mtime=100d cmd=svc* ticket=undefined
+    thoth: using database at thoth-db:28015 (configured from Manta)
+    NAME             TYPE  TIME                NODE/CMD         TICKET
+    0ecc8338c5949ea7 core  2017-08-10T01:57:56 svc.startd       -     
+    925de938d529e58b core  2017-08-18T03:51:27 svcs             -     
+    1d16db174473d8b5 core  2017-08-18T04:53:30 svcs             -     
+    2b4b3f5931e4b945 core  2017-08-18T05:39:14 svcs             -     
+    c5761bf75ea51a3f core  2017-08-18T08:27:01 svcs             -     
+    2204949c1735126b core  2017-08-18T15:08:35 svcs             -     
+    bc987a441a10da48 core  2017-08-24T17:44:41 svc.startd       -     
+    d7ba3510178394c3 core  2017-09-06T12:53:45 svcs             -     
+    48157650dc2d4204 core  2017-09-07T00:24:59 svccfg           -     
+    c48278b2930f991c core  2017-09-07T01:09:49 svccfg           -     
+    14918d63fb7239da core  2017-09-26T01:26:44 svc.startd       -     
+    9a29ead38c89930a core  2017-10-01T08:22:37 svc.configd      -     
+    d36a11c974f7f03d core  2017-10-01T08:22:37 svc.startd       -     
+    463412ce271ec7ec core  2017-10-02T15:39:23 svc.startd       -     
+
+#### Special specification: `dump=stdin`
+
+The special specification `dump=stdin` denotes that dump identifiers should
+be read from standard input, e.g.:
+
+    $ cat /tmp/dumps
+    3f7a8bde5a907afab7f966b9963c7d10
+    3260a5e49918260ccdc1f94830c937c1
+    f12ea8712e8b2586f062b03808b1c292
+    5aaa91149e94a91f66c76b00ec1de521
+    04a681f27ffcd19952d8efb75006c490
+    $ cat /tmp/dumps | thoth ls dump=stdin
+    thoth: using database at thoth-db:28015 (configured from Manta)
+    thoth: reading dump identifiers from stdin
+    NAME             TYPE  TIME                NODE/CMD         TICKET
+    3260a5e49918260c core  2017-11-16T22:30:22 pg_prefaulter    -     
+    5aaa91149e94a91f core  2017-11-17T11:07:43 pg_prefaulter    -     
+    04a681f27ffcd199 core  2017-11-17T14:12:27 pg_prefaulter    -     
+    3f7a8bde5a907afa core  2017-11-17T14:42:03 pg_prefaulter    -     
+    f12ea8712e8b2586 core  2017-11-17T17:22:21 pg_prefaulter    -     
 
 ## Subcommands
 
@@ -165,9 +298,15 @@ via [mlogin](http://blog.sysmgr.org/2013/06/manta-mlogin.html).
 ### ls
 
 Lists the dumps that match the dump specification, or all dumps if no
-dump specification is provided.  A dump abbreviation, the dump type, the
-time, the node or command, and the ticket are provided for each dump.
-By default, the dumps are listed in time order from oldest to newest.
+dump specification is provided.  By default, the dumps are listed in time
+order from oldest to newest.
+
+A dump abbreviation, the dump type, the time, the node or command, and the
+ticket are provided for each dump -- but `ls` will additionally display
+any property provided.  For example, to list the stack trace in addition for
+all dumps in the last three days from the `pg_prefaulter` command:
+
+    $ thoth ls mtime=3d cmd=pg_prefaulter stack
 
 ### object
 
@@ -354,18 +493,18 @@ Manta paths that may be retrieved with mget.
     /thoth/stor/thoth/analyzers/OS-2359-stacks
     /thoth/stor/thoth/analyzers/fmri
 
-# Thoth and SmartDataCenter
+# Thoth and Triton 
 
-For users of Joyent's SmartDataCanter, `sdc-thoth` allows for Thoth to
-be integrated and run on a regular basis from the head-node.  `sdc-thoth`
-operates by querying compute nodes for dumps and their
-corresponding hashes, checking those hashes against Thoth, and uploading
-any missing dumps through the head-node and into Thoth.
+For users of Joyent's Triton (née SmartDataCenter), `sdc-thoth` allows for
+Thoth to be integrated and run on a regular basis from the headnode.
+`sdc-thoth` operates by querying compute nodes for dumps and their
+corresponding hashes, checking those hashes against Thoth, and uploading any
+missing dumps through the headnode and into Thoth.
 
 ## Installation
 
-Running `sdc-thoth-install` as root on the head-node will install the
-latest binary on the head-node in `/opt/custom`, create a `thoth`
+Running `sdc-thoth-install` as root on the headnode will install the
+latest binary on the headnode in `/opt/custom`, create a `thoth`
 user and create the necessary SMF manifest as well as a `crontab` that
 runs `sdc-thoth` in dry-run mode.  You can also download and execute
 this directly from Manta (with the obvious caveats that you should really
@@ -373,6 +512,10 @@ never just pipe the output of `curl` to `bash` running
 as `root`):
 
     # curl -k https://us-east.manta.joyent.com/thoth/public/sdc-thoth-install | bash
+
+Before running `sdc-thoth-install`, you will need to login to the
+headnode with the credentials to add an SSH key to the account that is 
+to be used for Thoth.
 
 ## License
 
