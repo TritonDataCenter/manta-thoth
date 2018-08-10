@@ -62,18 +62,34 @@ if [[ -d $home ]]; then
 	fi
 fi
 
+# This is the manta where all your crash dumps will go, not necessarily
+# the same manta where thoth will be downloaded from.
 if [[ -z $MANTA_URL ]]; then
-	server=us-east.manta.joyent.com
+	server='us-east.manta.joyent.com'
 
 	if ( ! ping $server 1>&2 ); then
-		MANTA_URL=https://`dig +short $server | head -1`
+		MANTA_URL="https://$(dig +short $server | head -1)"
 		insecure="export MANTA_TLS_INSECURE=1"
 	else
-		MANTA_URL=https://$server
+		MANTA_URL="https://$server"
 		insecure=
 	fi
 
 	export MANTA_URL
+fi
+
+# This is the manta that thoth will be downloaded from. Even for on-prem
+# users this will almost always be Joyent's manta. If you make your own
+# builds then override this with an environment variable.
+if [[ -z $DOWNLOAD_MANTA ]]; then
+    server='us-east.manta.joyent.com'
+
+    if ( ! ping $server 1>&2 ); then
+        DOWNLOAD_MANTA="https://$(dig +short $server | head -1)"
+    else
+        DOWNLOAD_MANTA="https://$server"
+    fi
+
 fi
 
 [[ -n $SDC_ACCOUNT ]] || fatal "must set \$SDC_ACCOUNT"
@@ -106,7 +122,7 @@ if [ ! -d $base ]; then
 	tarball=/var/tmp/thoth.$$.tar.gz
 	staged=/tmp/thoth.$$.tar.gz
 	echo "Downloading thoth ..."
-	curl -# -k $MANTA_URL/thoth/public/thoth-sunos-latest.tar.gz > $staged 2>&4
+	curl -# -k "${DOWNLOAD_MANTA}/thoth/public/thoth-sunos-latest.tar.gz" > $staged 2>&4
 	echo "Downloading thoth to compute nodes ..."
 	sdc-oneachnode -a -g $staged -d /var/tmp 1>&2
 	echo "Installing thoth on compute nodes ..."
