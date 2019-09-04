@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /*
- * Copyright 2016 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 var mod_ctype = require('ctype');
@@ -3549,10 +3549,12 @@ var connect = function ()
 	var i, opts = {};
 	var mvars = [ 'MANTA_URL', 'MANTA_USER', 'MANTA_KEY_ID' ];
 
-	for (i = 0; i < mvars.length; i++) {
-		if (!process.env[mvars[i]]) {
-			fatal('expected ' + mvars[i] +
-			    ' environment variable to be set');
+	if (process.env.MANTA_NO_AUTH !== 'true') {
+		for (i = 0; i < mvars.length; i++) {
+			if (!process.env[mvars[i]]) {
+				fatal('expected ' + mvars[i] +
+				    ' environment variable to be set');
+			}
 		}
 	}
 
