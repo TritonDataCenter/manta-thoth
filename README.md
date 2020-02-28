@@ -1,5 +1,6 @@
 manta-thoth
 ===========
+FIXME: update for jobless
 
 Thoth is a Manta-based system for core and crash dump management for
 illumos-derived systems like SmartOS, OmniOS, DelphixOS, Nexenta, etc. --
