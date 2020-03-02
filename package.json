@@ -1,8 +1,8 @@
 {
 	"name": "manta-thoth",
 	"description": "Manta-based system for core and crash dump analysis",
-	"version": "1.2.1",
-        "license": "MIT",
+	"version": "1.2.2",
+	"license": "MIT",
 	"author": "Joyent (joyent.com)",
 	"dependencies": {
 		"manta": "^5.0.0",
@@ -17,7 +17,7 @@
 		"thoth": "bin/thoth"
 	},
 	"repository": {
-		"type" : "git",
-		"url" : "http://github.com/joyent/manta-thoth.git"
+		"type": "git",
+		"url": "http://github.com/joyent/manta-thoth.git"
 	}
 }

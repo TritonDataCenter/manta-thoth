@@ -7,20 +7,27 @@
 #
 # purge-thoth.sh -o 180 -w 14
 #
-# The JSON details are kept, and marked as 'purged'.
 # Requires GNU date(1).
 #
+# Note that purged dumps remain in the index (there's no facility to remove info
+# from the thoth index currently).
+#
 
-set -x
-
-usage="purge-thoth.sh -o <days> -w <days>"
+usage="purge-thoth.sh -o <days> [-w <days>] [-n]"
 cutoff=
-window=
+#purgecmd="mrm -r"
+purgecmd="mls"
+window=0
 
 set -o errexit
 set -o pipefail
 
-set -- `getopt o:w: $*`
+#
+# Default GC sizes are far too small for our typical usage.
+#
+export NODE_OPTIONS="--max-old-space-size=8192"
+
+set -- `getopt no:w: $*`
 if [ $? != 0 ]; then
 	echo $usage
 	exit 2
@@ -29,10 +36,16 @@ fi
 for i in $*
 do
 case $i in
+	-n) purgecmd=true; shift 1;;
 	-o) cutoff=$2; shift 2;;
 	-w) window=$2; shift 2;;
 esac
 done
+
+if [[ -z "$cutoff" ]]; then
+	echo $usage
+	exit 2
+fi
 
 if [ $# -gt 1 ]; then
 	echo $usage
@@ -40,13 +53,35 @@ if [ $# -gt 1 ]; then
 fi
 
 cutoff_mtime="$(date -d "$(date -u +%Y-%m-%d) - $cutoff days" +%s)"
-thothcmd="thoth info mtime=$(( $cutoff + $window ))d"
+if [[ "$window" -gt 0 ]]; then
+	thothcmd="thoth info mtime=$(( $cutoff + $window ))d otime=${cutoff}d"
+else
+	thothcmd="thoth info otime=${cutoff}d"
+fi
+
+echo "$0: processing $thothcmd"
 tmpfile="$(mktemp)"
-
 $thothcmd >$tmpfile
-echo $tmpfile
 
-json -ga name time ticket <$tmpfile | while read ln; do
+#
+# We'd love to use `json` here, but it can't handle the typical size of the
+# output we get, even with the above GC tweak.  Good old `awk` will have to do.
+#
+awk -e '
+BEGIN { name=""; time=""; ticket=""; }
+/^        "name"/ {
+	if (name != "") { print name " " time " " ticket; }
+	gsub("\",*", "", $2);
+	name=$2;
+	time="";
+	ticket="";
+}
+/^        "time"/ { gsub(",", "", $2); time=$2; }
+/^        "ticket"/ { gsub("\2,*", "", $2); ticket=$2; }
+END {
+	if (name != "") { print name " " time " " ticket; }
+}
+' <$tmpfile | while read ln; do
 	set -- $ln
 	path=$1
 	time=$2
@@ -61,15 +96,9 @@ json -ga name time ticket <$tmpfile | while read ln; do
 		continue
 	fi
 
-	echo "Purging $name created $(date --date="@$time")"
-
-	#
-	# It's quicker to just try to purge again than to check if it's been
-	# purged already.
-	#
-
-	#thoth set $name purged true
-	#mrm -r $name || true
+	if $purgecmd $path >/dev/null 2>&1; then
+		echo "Purged $name created $(date --date="@$time")"
+	fi
 done
 
 rm $tmpfile

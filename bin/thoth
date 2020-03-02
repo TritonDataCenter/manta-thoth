@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 var mod_ctype = require('ctype');
@@ -995,7 +995,8 @@ dumpsFromSpec = function (client, argv, opts, cb)
 {
 	var i;
 	var illegal = undefined;
-	var filters = [], time = undefined, undefs = [], limit = undefined;
+	var filters = [], time = undefined, otime = undefined;
+	var undefs = [], limit = undefined;
 
 	/*
 	 * This is a little isntall-ish, but we allow several different ways
@@ -1086,6 +1087,11 @@ dumpsFromSpec = function (client, argv, opts, cb)
 			continue;
 		}
 
+		if (filter[0] == 'otime') {
+			otime = parseAge(filter[1]);
+			continue;
+		}
+
 		if (filter[0] == 'limit') {
 			limit = parseInt(filter[1], 10);
 			continue;
@@ -1147,8 +1153,13 @@ dumpsFromSpec = function (client, argv, opts, cb)
 		var rval = mod_r.table('dumps');
 
 		if (time) {
-			rval = rval.between(time,
-			    (new Date()).valueOf() / 1000,
+			var rtime = (otime === undefined ?
+			   ((new Date()).valueOf() / 1000) : otime);
+			rval = rval.between(time, rtime,
+			    { index: 'time', leftBound: 'open' });
+		} else if (otime) {
+			var ltime = time === undefined ? 0 : time;
+			rval = rval.between(ltime, otime,
 			    { index: 'time', leftBound: 'open' });
 		}
 
