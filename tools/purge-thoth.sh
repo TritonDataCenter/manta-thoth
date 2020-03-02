@@ -5,17 +5,20 @@
 # Remove dumps older than a certain cut-off period, for example,
 # ones older than 180 days, only looking 14 days prior to that point:
 #
-# purge-thoth.sh -o 180 -w 14
+# purge-thoth.sh -o 180 -w 14 -d
 #
-# Requires GNU date(1).
+# The -d option must be specified to actually remove anything (as this is a
+# destructive action!).
 #
 # Note that purged dumps remain in the index (there's no facility to remove info
 # from the thoth index currently).
 #
+# Requires GNU date(1).
+#
 
-usage="purge-thoth.sh -o <days> [-w <days>] [-n]"
+usage="purge-thoth.sh -o <days> [-w <days>] [-d]"
 cutoff=
-purgecmd="mrm -r"
+purgecmd="true"
 window=0
 
 set -o errexit
@@ -26,7 +29,7 @@ set -o pipefail
 #
 export NODE_OPTIONS="--max-old-space-size=8192"
 
-set -- `getopt no:w: $*`
+set -- `getopt do:w: $*`
 if [ $? != 0 ]; then
 	echo $usage
 	exit 2
@@ -35,7 +38,7 @@ fi
 for i in $*
 do
 case $i in
-	-n) purgecmd=true; shift 1;;
+	-d) purgecmd="mrm -r"; shift 1;;
 	-o) cutoff=$2; shift 2;;
 	-w) window=$2; shift 2;;
 esac
@@ -96,7 +99,7 @@ END {
 	fi
 
 	if $purgecmd $path >/dev/null 2>&1; then
-		echo "Purged $name created $(date --date="@$time")"
+		echo "Purged $name (created $(date --date="@$time"))"
 	fi
 done
 
