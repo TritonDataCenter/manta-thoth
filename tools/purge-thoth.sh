@@ -18,7 +18,7 @@
 
 usage="purge-thoth.sh -o <days> [-w <days>] [-d]"
 cutoff=
-purgecmd="true"
+purgecmd="mls"
 window=0
 
 set -o errexit
