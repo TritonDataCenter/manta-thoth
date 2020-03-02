@@ -11,6 +11,8 @@
 # Requires GNU date(1).
 #
 
+set -x
+
 usage="purge-thoth.sh -o <days> -w <days>"
 cutoff=
 window=
