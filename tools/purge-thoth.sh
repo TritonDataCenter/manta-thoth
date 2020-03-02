@@ -94,7 +94,7 @@ END {
 		continue
 	fi
 
-	if [[ "$cutoff_time" < "$mtime" ]]; then
+	if [[ "$cutoff_mtime" < "$time" ]]; then
 		continue
 	fi
 
