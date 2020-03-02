@@ -43,7 +43,7 @@ cutoff_mtime="$(date -d "$(date -u +%Y-%m-%d) - $cutoff days" +%s)"
 thothcmd="thoth info mtime=$(( $cutoff + $window ))d"
 tmpfile="$(mktemp)"
 
-$thothcmd >$tmpfile 2>/dev/null
+$thothcmd >$tmpfile
 echo $tmpfile
 
 json -ga name time ticket <$tmpfile | while read ln; do
