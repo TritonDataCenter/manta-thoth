@@ -29,6 +29,8 @@ if (!mod_stream.Readable) {
 var Readable = require('stream').Readable;
 var sprintf = require('sprintf').sprintf;
 var endsWith = mod_jsprim.endsWith;
+var Int64 = require('node-int64');
+
 var ThothListStream = require('../lib/liststream').ThothListStream;
 var forEachStream = require('../lib/foreachstream');
 var batchStream = require('../lib/batchstream');
@@ -214,8 +216,7 @@ var jobby = function (httpres)
 	if (thoth.jobby !== undefined)
 		return (thoth.jobby);
 
-	console.log(httpres.headers);
-	thoth.jobby = (httpres.headers['server'] === 'Manta/2');
+	thoth.jobby = (httpres.headers['server'] === 'Manta/1');
 	return (thoth.jobby);
 }
 
@@ -746,7 +747,7 @@ var isCore = function (fd, sum)
 	return (true);
 }
 
-var isCrash = function (fd, sum)
+var readDumpHeader = function (fd)
 {
 	var parser = new mod_ctype.Parser({ endian: 'little' });
 	var hdr, p;
@@ -757,20 +758,8 @@ var isCrash = function (fd, sum)
 	try {
 		mod_fs.readSync(fd, buffer, 0, minsize, 0);
 	} catch (err) {
-		return (false);
+		return (undefined);
 	}
-
-	var constants = {
-		DUMP_MAGIC: 0xdefec8ed,
-		DF_VALID: 0x00000001,
-		DF_COMPLETE: 0x00000002,
-		DF_LIVE: 0x00000004,
-		DF_COMPRESSED: 0x00000008,
-		DF_KERNEL: 0x00010000,
-		DF_ALL: 0x00020000,
-		DF_CURPROC: 0x00040000,
-		DF_CONTENT: 0xffff0000
-	};
 
 	var utsname = [
 		{ sysname: { type: 'char[257]' } },
@@ -817,7 +806,27 @@ var isCrash = function (fd, sum)
 
 	parser.typedef('struct utsname', utsname);
 
-	hdr = parser.readData(dumphdr, buffer, 0);
+	return (parser.readData(dumphdr, buffer, 0));
+}
+
+var isCrash = function (fd, sum)
+{
+	var hdr = readDumpHeader(fd);
+
+	if (hdr === undefined)
+		return (false);
+
+	var constants = {
+		DUMP_MAGIC: 0xdefec8ed,
+		DF_VALID: 0x00000001,
+		DF_COMPLETE: 0x00000002,
+		DF_LIVE: 0x00000004,
+		DF_COMPRESSED: 0x00000008,
+		DF_KERNEL: 0x00010000,
+		DF_ALL: 0x00020000,
+		DF_CURPROC: 0x00040000,
+		DF_CONTENT: 0xffff0000
+	};
 
 	if (hdr.dump_magic != constants.DUMP_MAGIC) {
 		status('not a dump; magic mismatch (expected ' +
@@ -1436,6 +1445,59 @@ var uncompressCrash = function (client, stat, base, dump, cb)
 	    });
 };
 
+/*
+ * If we can't use a job, we can only do some minimal processing for the
+ * info.json for a crash.
+ */
+var processCrashJobless = function (client, file, stat, base, dump, cb)
+{
+	try {
+		fd = mod_fs.openSync(file, 'r');
+	} catch (err) {
+		fatal('couldn\'t open "' + file + '": ' + err);
+		return (cb(err));
+	}
+
+	var hdr = readDumpHeader(fd);
+
+	if (hdr === undefined) {
+		err = 'couldn\'t read dump header for "' + file + '"';
+		fatal(err);
+		return (cb(err));
+	}
+
+	// not yet modern enough to use BigInt() ...
+	var time = new Int64(hdr.dump_crashtime[0], hdr.dump_crashtime[1]);
+
+	var json = sprintf('{ ' +
+	    '"name": "%s", "dump": "%s", "platform": "%s", "node": "%s", ' +
+	    '"time": "%s", "version": "1", "type": "crash", "properties": {} }',
+	    base, dump, hdr.dump_utsname.version, hdr.dump_utsname.nodename,
+	    time);
+
+	var tmpfile = '/tmp/json.' + process.pid;
+	var cmdfile = '/tmp/thoth.' + process.pid;
+
+	/*
+	 * We need to use a script here due to limits on child_process.exec()'s
+	 * first argument length.
+	 */
+
+	mod_fs.writeFileSync(cmdfile, '#!/bin/bash\n\n' +
+	    'echo \'' + json + '\' >' + tmpfile + ' && ' +
+	    'mput -f ' + tmpfile + ' ' + base + '/info.json && ' +
+	    thoth.reexec + ' load ' + tmpfile);
+
+	mod_fs.chmodSync(cmdfile, 0o775);
+
+	mod_child.execFile(cmdfile , [], function (err) {
+		checkError(err);
+		mod_fs.unlinkSync(tmpfile);
+		mod_fs.unlinkSync(cmdfile);
+		cb();
+	});
+}
+
 var putCrash = function (client, file, stat, base, cb)
 {
 	var stream = mod_fs.createReadStream(file);
@@ -1454,9 +1516,14 @@ var putCrash = function (client, file, stat, base, cb)
 	};
 
 	stream.on('open', function () {
-		client.put(dump, stream, opts, function (err) {
+		client.put(dump, stream, opts, function (err, res) {
 			checkError(err);
-			uncompressCrash(client, stat, base, dump, cb);
+			if (jobby(res)) {
+				uncompressCrash(client, stat, base, dump, cb);
+			} else {
+				processCrashJobless(client, file, stat, base,
+				    dump, cb);
+			}
 		});
 	});
 }
