@@ -5,13 +5,14 @@
 	"license": "MIT",
 	"author": "Joyent (joyent.com)",
 	"dependencies": {
-		"manta": "^5.0.0",
-		"ctype": ">=0.5.2",
-		"sprintf": "0.1.1",
 		"bunyan": "^1.8.5",
+		"ctype": ">=0.5.2",
 		"jsprim": "^1.3.1",
+		"manta": "^5.0.0",
+		"readable-stream": ">=1.1.9",
 		"rethinkdb": "2.0.0",
-		"readable-stream": ">=1.1.9"
+		"smartdc": "^9.0.0",
+		"sprintf": "0.1.1"
 	},
 	"bin": {
 		"thoth": "bin/thoth"

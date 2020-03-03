@@ -10,15 +10,15 @@
 # The -d option must be specified to actually remove anything (as this is a
 # destructive action!).
 #
-# Note that purged dumps remain in the index (there's no facility to remove info
-# from the thoth index currently).
+# Note that purged dumps remain in the index for posterity, but with
+# properties.purged === "true".
 #
 # Requires GNU date(1).
 #
 
 usage="purge-thoth.sh -o <days> [-w <days>] [-d]"
 cutoff=
-purgecmd="mls"
+dryrun=true
 window=0
 
 set -o errexit
@@ -38,7 +38,7 @@ fi
 for i in $*
 do
 case $i in
-	-d) purgecmd="mrm -r"; shift 1;;
+	-d) dryrun=false; shift 1;;
 	-o) cutoff=$2; shift 2;;
 	-w) window=$2; shift 2;;
 esac
@@ -55,10 +55,9 @@ if [ $# -gt 1 ]; then
 fi
 
 cutoff_mtime="$(date -d "$(date -u +%Y-%m-%d) - $cutoff days" +%s)"
+thothcmd="thoth info properties.purged=undefined otime=${cutoff}d"
 if [[ "$window" -gt 0 ]]; then
-	thothcmd="thoth info mtime=$(( $cutoff + $window ))d otime=${cutoff}d"
-else
-	thothcmd="thoth info otime=${cutoff}d"
+	thothcmd="$thothcmd mtime=$(( $cutoff + $window ))d"
 fi
 
 echo "$0: processing $thothcmd"
@@ -98,9 +97,25 @@ END {
 		continue
 	fi
 
-	if $purgecmd $path >/dev/null 2>&1; then
-		echo "Purged $name (created $(date --date="@$time"))"
+	echo "Checking $name (created $(date --date="@$time"))"
+
+	tmpfile2="$(mktemp)"
+
+	if mget $path/info.json >$tmpfile2 2>/dev/null; then
+		echo "Purging $name (created $(date --date="@$time"))"
+		if [[ "$dryrun" = "false" ]]; then
+			json -e 'properties.purged = "true"' <$tmpfile2 | \
+			    thoth load /dev/stdin
+			true ; #mrm -r $path
+		fi
+	elif thoth info $name >$tmpfile2; then
+		# already deleted; mark as purged
+		echo "marking $name as purged"
+		json -e 'properties.purged = "true"' <$tmpfile2 | \
+		    thoth load /dev/stdin
 	fi
+
+	rm $tmpfile2
 done
 
 rm $tmpfile

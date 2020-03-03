@@ -3667,6 +3667,12 @@ var main = function ()
 	if (argv.length < 3)
 		usage('expected command');
 
+	/* see https://github.com/joyent/node-exeunt */
+	[process.stdout, process.stderr].forEach(function (s) {
+		s && s._handle && s._handle.setBlocking &&
+		    s._handle.setBlocking(true)
+	});
+
 	thoth.analyzers = thoth.path + '/' + thoth.analyzers;
 	thoth.logs = thoth.path + '/' + thoth.logs;
 	thoth.index = thoth.path + '/' + thoth.index;
