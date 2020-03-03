@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 var mod_ctype = require('ctype');
@@ -40,6 +40,7 @@ var autoanalyzers = {};
 
 var thoth = {
 	version: 1,
+	reexec: process.argv[0] + ' ' + process.argv[1],
 	hashlen: 32,
 	path: '/' + (process.env.THOTH_USER ? process.env.THOTH_USER :
 	    process.env.MANTA_USER) + '/stor/thoth',
@@ -69,6 +70,7 @@ var thoth = {
 	},
 	useindex: true,
 	analyzerdebug: false,
+	jobby: undefined,
 	v8: '/Joyent_Dev/public/mdb_v8/latest',
 	cmds: [
 		{ token: 'init',
@@ -206,6 +208,16 @@ var parseAge = function (t)
 
 	return (now - time2seconds(t));
 };
+
+var jobby = function (httpres)
+{
+	if (thoth.jobby !== undefined)
+		return (thoth.jobby);
+
+	console.log(httpres.headers);
+	thoth.jobby = (httpres.headers['server'] === 'Manta/2');
+	return (thoth.jobby);
+}
 
 /*
  * To determine if the specified file is a core file, we need to read the
@@ -941,7 +953,7 @@ jobSetThoth = function (job)
 	    '~/' + config + '; cd / ; tar xzf /assets/' + asset;
 }
 
-jobExecThoth = function (what)
+thothLoadCmd = function (what)
 {
 	return ('/opt/custom/thoth/node_modules/manta-thoth/bin/thoth ' +
 	    'load ' + what);
@@ -1218,18 +1230,22 @@ dumpsFromSpec = function (client, argv, opts, cb)
 	});
 }
 
-processStack = function ()
+processStack = function (file)
 {
-	return ('mdb -e \'$c 0\' $MANTA_INPUT_FILE 2> /dev/null | ' +
+	return ('mdb -e \'$c 0\' "' + file + '" 2>/dev/null | ' +
 	    'awk \'BEGIN{printf("\\t\\"stack\\": [ ")} ' +
 	    '{printf("%s\\"%s\\"", NR > 1 ? ", " : "", $0)} ' +
 	    'END{printf(" ],\\n")}\'');
 }
 
-processCore = function (client, stat, base, dump, cb)
+/*
+ * Create the basic JSON for a core file. As we already have the core file to
+ * peruse, we'll do some basic analysis in place now.
+ */
+processCore = function (file, stat, base, dump, cb)
 {
-	var elfdump = 'elfdump -n $MANTA_INPUT_FILE | ';
-	var json = '/tmp/json.$$';
+	var elfdump = 'elfdump -n "' + file + '" | ';
+	var json = '/tmp/json.' + process.pid;
 	var quotestr = 'sed \'s/"/\\\"/g\'';
 
 	var dumpfield = function (f) {
@@ -1272,44 +1288,18 @@ processCore = function (client, stat, base, dump, cb)
 		    '\\": \\"%s\\",\\n", $0) }\' >> ' + json + ';'
 	}
 
-	cmd += processStack() + ' >> ' + json + '; ';
+	cmd += processStack(file) + ' >> ' + json + '; ';
 	cmd += 'echo \'\t"type": "core",\' >> ' + json + '; ';
 	cmd += 'echo \'\t"properties": {}\' >> ' + json + '; ';
 	cmd += 'echo } >> ' + json + '; ';
 	cmd += 'mput -f ' + json + ' ' + base + '/info.json ; ';
-	cmd += jobExecThoth(json);
+	cmd += thoth.reexec + ' load ' + json + '; ';
 
-	job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
-	jobSetThoth(job);
-
-	status('creating job to process ' + mod_path.basename(base));
-
-	client.createJob(job, function (err, id) {
+	mod_child.exec(cmd, function (err) {
 		checkError(err);
-
-		status('adding key to job ' + id);
-
-		client.addJobKey(id, dump, function (err) {
-			checkError(err);
-			status('processing ' + mod_path.basename(base));
-
-			client.endJob(id, function (err) {
-				checkError(err);
-				jobWait(client, id, cb);
-			});
-		});
+		mod_fs.unlinkSync(json);
+		cb();
 	});
-};
-
-var uncompressCore = function (client, stat, base, dump, cb)
-{
-	cmd = 'gunzip -cd $MANTA_INPUT_FILE > /var/tmp/gunzip.$$ ;'
-	cmd += 'mput -f /var/tmp/gunzip.$$ ' + dump;
-
-	status('creating job to uncompress ' + mod_path.basename(base));
-	jobOneKey(client, dump + '.gz', cmd,
-	    function () { processCore(client, stat, base, dump, cb); },
-	    function (job) { job.phases[0].disk = 128; });
 };
 
 var progressBar = function (dump, stream, stat)
@@ -1335,8 +1325,8 @@ var progressBar = function (dump, stream, stat)
 var putCore = function (client, file, stat, base, cb)
 {
 	/*
-	 * We have the dump verified and we have the directory successfully
-	 * created; time to actually upload the dump.
+	 * We have the directory successfully created; time to actually upload
+	 * the core.
 	 */
 	var stream = mod_fs.createReadStream(file);
 	var dump = base + '/' + mod_path.basename(file);
@@ -1347,19 +1337,15 @@ var putCore = function (client, file, stat, base, cb)
 
 	progressBar(dump, stream, stat);
 
-	pipe = stream.pipe(gzip);
-	pipe.pause();
-
 	var opts = {
 		copies: 1,
 		headers: { 'max-content-length': stat.size }
 	};
 
 	stream.on('open', function () {
-		client.put(dump + '.gz', gzip, opts, function (err) {
+		client.put(dump, stream, opts, function (err, res) {
 			checkError(err);
-
-			uncompressCore(client, stat, base, dump, cb);
+			processCore(file, stat, base, dump, cb);
 		});
 	});
 };
@@ -1404,12 +1390,12 @@ var processCrash = function (client, stat, base, dump, cb)
 		    '\\": \\"%s\\",\\n", $0) }\' >> ' + json + ';'
 	}
 
-	cmd += processStack() + ' >> ' + json + '; ';
+	cmd += processStack('$MANTA_INPUT_FILE') + ' >> ' + json + '; ';
 	cmd += 'echo \'\t"type": "crash",\' >> ' + json + '; ';
 	cmd += 'echo \'\t"properties": {}\' >> ' + json + '; ';
 	cmd += 'echo } >> ' + json + '; ';
 	cmd += 'mput -f ' + json + ' ' + base + '/info.json ; ';
-	cmd += jobExecThoth(json);
+	cmd += thothLoadCmd(json);
 
 	job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
 	jobSetThoth(job);
@@ -1549,7 +1535,7 @@ handlers.upload = function (client, argv)
 	openDump(argv[0], function (file) {
 		status('creating ' + file.digest);
 
-		client.mkdirp(file.base, function (err) {
+		client.mkdirp(file.base, function (err, res) {
 			checkError(err);
 			put[file.type](client,
 			    file.name, file.stat, file.base, next);
@@ -1893,7 +1879,7 @@ handlers.index = function (client, argv)
 	var job = { phases: [ {
 		type: 'map',
 		exec: 'DTRACE_DOF_INIT_DISABLE=1 ' +
-		    jobExecThoth('$MANTA_INPUT_FILE')
+		    thothLoadCmd('$MANTA_INPUT_FILE')
 	} ] };
 
 	jobSetThoth(job);
@@ -2425,7 +2411,7 @@ var setProp = function (client, keys, prop, val, sysprop)
 	cmd += 'cat $MANTA_INPUT_FILE ' + tmp + ' | json --deep-merge > ' +
 	    json + ';';
 	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;';
-	cmd += jobExecThoth(json) + ' || ' +
+	cmd += thothLoadCmd(json) + ' || ' +
 	    'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
 	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
 
@@ -2440,7 +2426,7 @@ var unsetProp = function (client, keys, prop, sysprop)
 	    (sysprop ? '' : 'properties.') +
 	    prop + '=undefined" > ' + json + '; ';
 	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;';
-	cmd += jobExecThoth(json) + ' || ' +
+	cmd += thothLoadCmd(json) + ' || ' +
 	    'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
 	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
 
@@ -2635,7 +2621,7 @@ var setAnalyzer = function (client, exec, cb, opts)
 	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + jobExecThoth('$propout') + ' || ' +
+	cmd += '	' + thothLoadCmd('$propout') + ' || ' +
 	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
@@ -2649,7 +2635,7 @@ var setAnalyzer = function (client, exec, cb, opts)
 	cmd += '	cat $THOTH_INFO | json -e ';
 	cmd += '"this.properties.$1=undefined" > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + jobExecThoth('$propout') + ' || ' +
+	cmd += '	' + thothLoadCmd('$propout') + ' || ' +
 	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
@@ -2665,7 +2651,7 @@ var setAnalyzer = function (client, exec, cb, opts)
 	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + jobExecThoth('$propout') + ' || ' +
+	cmd += '	' + thothLoadCmd('$propout') + ' || ' +
 	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
@@ -2676,7 +2662,7 @@ var setAnalyzer = function (client, exec, cb, opts)
 	cmd += '	cat $THOTH_INFO | json -e "this.ticket=undefined"';
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + jobExecThoth('$propout') + ' || ' +
+	cmd += '	' + thothLoadCmd('$propout') + ' || ' +
 	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
 	cmd += '}\n\n';
 
