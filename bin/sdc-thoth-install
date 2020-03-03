@@ -130,9 +130,8 @@ if [ ! -d $base ]; then
 	rm $staged
 fi
 
-PATH=$base/bin:$PATH
-PATH=$base/node_modules/manta-thoth/bin:$PATH
-PATH=$base/node_modules/manta-thoth/node_modules/manta/bin:$PATH
+PATH=$base/bin:$base/build/node/bin/:$PATH
+PATH=$base/node_modules/manta/bin:$PATH
 PATH=$base/node_modules/smartdc/bin:$PATH
 export PATH
 
@@ -177,7 +176,6 @@ crontab=$home/crontab
 postboot=$base/bin/postboot
 manifest=/opt/custom/smf/thoth.xml
 runthoth=$home/run-thoth
-thothwrapper=$base/bin/thoth
 
 echo Creating crontab ...
 
@@ -219,14 +217,6 @@ EOF
 
 chmod +x $runthoth
 ln -s ../home/thoth/run-thoth /opt/custom/thoth/bin/run-thoth
-
-cat > $thothwrapper <<EOF
-#!/bin/bash
-
-$base/bin/node $base/node_modules/.bin/thoth "\${@}"
-EOF
-
-chmod +x $thothwrapper
 
 cat > $postboot <<EOF
 #!/bin/bash

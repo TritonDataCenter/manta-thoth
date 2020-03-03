@@ -69,7 +69,7 @@ Now you can upload your first core dump:
     thoth: using database at my-thoth-server:28015 (configured from Manta)
     thoth: creating 76998f82a450a8914037e4da838ec609
     thoth: uploading core.bc.24388 to 76998f82a450a8914037e4da838ec609
-    thoth: core.bc.24388 [=======================>] 100%   3.83MB 
+    thoth: core.bc.24388 [=======================>] 100%   3.83MB
     thoth: creating job to uncompress 76998f82a450a8914037e4da838ec609
     thoth: adding key to job 42b9feff-56d5-482a-b12b-da2099fd44ed
     thoth: processing job 42b9feff-56d5-482a-b12b-da2099fd44ed
@@ -85,8 +85,8 @@ This dump should appear in `thoth ls` output:
 
     $ thoth ls
     thoth: using database at my-thoth-server:28015 (configured from Manta)
-    NAME             TYPE  TIME                NODE/CMD         TICKET  
-    76998f82a450a891 core  2015-12-04T13:10:26 bc               -       
+    NAME             TYPE  TIME                NODE/CMD         TICKET
+    76998f82a450a891 core  2015-12-04T13:10:26 bc               -
 
 # Running Thoth
 
@@ -114,31 +114,31 @@ The special token `mtime` denotes how long ago the dump was uploaded,
 with equality denoting recency.  For example, to list all of the dumps
 uploaded in the last 6 hours:
 
-    $ thoth ls mtime=6h 
+    $ thoth ls mtime=6h
     thoth: using database at thoth-db:28015 (configured from Manta)
     NAME             TYPE  TIME                NODE/CMD         TICKET
-    e1f5422b892d9394 core  2017-11-17T19:34:29 java             -     
-    c04110bc8190a84e core  2017-11-17T19:39:52 node             -     
-    b9379570b4a9a224 core  2017-11-17T19:39:52 node             -     
-    5f1171019ce419cb core  2017-11-17T19:51:01 node             -     
-    713f9e8b48559acd core  2017-11-17T19:55:57 node             -     
-    d91719939666de40 core  2017-11-17T20:05:57 node             -     
-    beaa65d3548ac96f core  2017-11-17T20:23:19 pg_prefaulter    -     
-    5841ba86a2b198be core  2017-11-17T20:53:06 node             -     
-    3d8921ce583dff68 core  2017-11-17T20:54:06 node             -     
-    34a8661c049456b1 core  2017-11-17T21:14:09 node             -     
-    6d75f1cd30898f48 core  2017-11-17T21:31:19 node             -     
-    cc2328f7d8a6c4ad core  2017-11-17T21:41:15 node             -     
-    b0b6f4ed9ab418ce core  2017-11-17T21:51:20 node             -     
-    5d64e695505d15c9 core  2017-11-17T22:11:18 node             -     
-    96d2271d81e4cd63 core  2017-11-17T22:21:17 node             -     
-    71aff9c315553b03 core  2017-11-17T23:31:14 node             -     
-    72f18495c7f54841 core  2017-11-18T00:21:17 node             -     
+    e1f5422b892d9394 core  2017-11-17T19:34:29 java             -
+    c04110bc8190a84e core  2017-11-17T19:39:52 node             -
+    b9379570b4a9a224 core  2017-11-17T19:39:52 node             -
+    5f1171019ce419cb core  2017-11-17T19:51:01 node             -
+    713f9e8b48559acd core  2017-11-17T19:55:57 node             -
+    d91719939666de40 core  2017-11-17T20:05:57 node             -
+    beaa65d3548ac96f core  2017-11-17T20:23:19 pg_prefaulter    -
+    5841ba86a2b198be core  2017-11-17T20:53:06 node             -
+    3d8921ce583dff68 core  2017-11-17T20:54:06 node             -
+    34a8661c049456b1 core  2017-11-17T21:14:09 node             -
+    6d75f1cd30898f48 core  2017-11-17T21:31:19 node             -
+    cc2328f7d8a6c4ad core  2017-11-17T21:41:15 node             -
+    b0b6f4ed9ab418ce core  2017-11-17T21:51:20 node             -
+    5d64e695505d15c9 core  2017-11-17T22:11:18 node             -
+    96d2271d81e4cd63 core  2017-11-17T22:21:17 node             -
+    71aff9c315553b03 core  2017-11-17T23:31:14 node             -
+    72f18495c7f54841 core  2017-11-18T00:21:17 node             -
 
 #### Special token: `limit`
 
 The special token `limit` denotes that the number of dumps specified
-should be limited to the parameter, allowing a smaller number of 
+should be limited to the parameter, allowing a smaller number of
 dumps to be examined.  (Exactly which dumps will be returned is unspecified.)
 For example, to get the ID of at most five dumps from commands that begin with
 "system":
@@ -160,20 +160,20 @@ begin with `svc` that don't have a ticket:
     $ thoth ls mtime=100d cmd=svc* ticket=undefined
     thoth: using database at thoth-db:28015 (configured from Manta)
     NAME             TYPE  TIME                NODE/CMD         TICKET
-    0ecc8338c5949ea7 core  2017-08-10T01:57:56 svc.startd       -     
-    925de938d529e58b core  2017-08-18T03:51:27 svcs             -     
-    1d16db174473d8b5 core  2017-08-18T04:53:30 svcs             -     
-    2b4b3f5931e4b945 core  2017-08-18T05:39:14 svcs             -     
-    c5761bf75ea51a3f core  2017-08-18T08:27:01 svcs             -     
-    2204949c1735126b core  2017-08-18T15:08:35 svcs             -     
-    bc987a441a10da48 core  2017-08-24T17:44:41 svc.startd       -     
-    d7ba3510178394c3 core  2017-09-06T12:53:45 svcs             -     
-    48157650dc2d4204 core  2017-09-07T00:24:59 svccfg           -     
-    c48278b2930f991c core  2017-09-07T01:09:49 svccfg           -     
-    14918d63fb7239da core  2017-09-26T01:26:44 svc.startd       -     
-    9a29ead38c89930a core  2017-10-01T08:22:37 svc.configd      -     
-    d36a11c974f7f03d core  2017-10-01T08:22:37 svc.startd       -     
-    463412ce271ec7ec core  2017-10-02T15:39:23 svc.startd       -     
+    0ecc8338c5949ea7 core  2017-08-10T01:57:56 svc.startd       -
+    925de938d529e58b core  2017-08-18T03:51:27 svcs             -
+    1d16db174473d8b5 core  2017-08-18T04:53:30 svcs             -
+    2b4b3f5931e4b945 core  2017-08-18T05:39:14 svcs             -
+    c5761bf75ea51a3f core  2017-08-18T08:27:01 svcs             -
+    2204949c1735126b core  2017-08-18T15:08:35 svcs             -
+    bc987a441a10da48 core  2017-08-24T17:44:41 svc.startd       -
+    d7ba3510178394c3 core  2017-09-06T12:53:45 svcs             -
+    48157650dc2d4204 core  2017-09-07T00:24:59 svccfg           -
+    c48278b2930f991c core  2017-09-07T01:09:49 svccfg           -
+    14918d63fb7239da core  2017-09-26T01:26:44 svc.startd       -
+    9a29ead38c89930a core  2017-10-01T08:22:37 svc.configd      -
+    d36a11c974f7f03d core  2017-10-01T08:22:37 svc.startd       -
+    463412ce271ec7ec core  2017-10-02T15:39:23 svc.startd       -
 
 #### Special specification: `dump=stdin`
 
@@ -190,11 +190,11 @@ be read from standard input, e.g.:
     thoth: using database at thoth-db:28015 (configured from Manta)
     thoth: reading dump identifiers from stdin
     NAME             TYPE  TIME                NODE/CMD         TICKET
-    3260a5e49918260c core  2017-11-16T22:30:22 pg_prefaulter    -     
-    5aaa91149e94a91f core  2017-11-17T11:07:43 pg_prefaulter    -     
-    04a681f27ffcd199 core  2017-11-17T14:12:27 pg_prefaulter    -     
-    3f7a8bde5a907afa core  2017-11-17T14:42:03 pg_prefaulter    -     
-    f12ea8712e8b2586 core  2017-11-17T17:22:21 pg_prefaulter    -     
+    3260a5e49918260c core  2017-11-16T22:30:22 pg_prefaulter    -
+    5aaa91149e94a91f core  2017-11-17T11:07:43 pg_prefaulter    -
+    04a681f27ffcd199 core  2017-11-17T14:12:27 pg_prefaulter    -
+    3f7a8bde5a907afa core  2017-11-17T14:42:03 pg_prefaulter    -
+    f12ea8712e8b2586 core  2017-11-17T17:22:21 pg_prefaulter    -
 
 ## Subcommands
 
@@ -494,7 +494,7 @@ Manta paths that may be retrieved with mget.
     /thoth/stor/thoth/analyzers/OS-2359-stacks
     /thoth/stor/thoth/analyzers/fmri
 
-# Thoth and Triton 
+# Thoth and Triton
 
 For users of Joyent's Triton (née SmartDataCenter), `sdc-thoth` allows for
 Thoth to be integrated and run on a regular basis from the headnode.
@@ -507,21 +507,29 @@ missing dumps through the headnode and into Thoth.
 Running `sdc-thoth-install` as root on the headnode will install the
 latest binary on the headnode in `/opt/custom`, create a `thoth`
 user and create the necessary SMF manifest as well as a `crontab` that
-runs `sdc-thoth` in dry-run mode.  You can also download and execute
-this directly from Manta (with the obvious caveats that you should really
-never just pipe the output of `curl` to `bash` running
-as `root`):
+runs `sdc-thoth` in dry-run mode.  The latest version can be grabbed via:
 
-    # curl -k https://us-east.manta.joyent.com/thoth/public/sdc-thoth-install | bash
+    # curl -k \
+      https://us-east.manta.joyent.com/thoth/public/thoth/thoth-sunos-latest.tar.gz | \
+      tar zxvf - ./opt/custom/thoth/bin/sdc-install-thoth
 
-Before running `sdc-thoth-install`, you will need to login to the
-headnode with the credentials to add an SSH key to the account that is 
-to be used for Thoth.
+Before running the script, you will need to have created your thoth-hosting
+user, started a rethinkdb instance, added the thoth config file, and run `thoth
+init` as described above. Then:
+
+    # export SDC_ACCOUNT=thoth # or the Manta user that's hosting
+    # export SDC_URL=https://mycloudapi... # cloudapi endpoint for Triton
+    # export SDC_KEY_ID=... # key ID for that user
+    # export MANTA_URL=https://mymanta... # manta endpoint
+    # ./opt/custom/thoth/bin/sdc-install-thoth
+
+After installation, `su - thoth`, and try running `sdc-thoth`. If it's working
+OK, you can edit `./run-thoth` to remove the `--dry-run` flag.
 
 ## License
 
 The MIT License (MIT)
-Copyright (c) 2018 Joyent
+Copyright 2020 Joyent, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in

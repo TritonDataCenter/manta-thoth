@@ -1,4 +1,4 @@
+bits/
+build/
 node_modules/
-opt/
 thoth-*.tar.gz
-node-v*

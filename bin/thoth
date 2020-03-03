@@ -1488,7 +1488,7 @@ var processCrashJobless = function (client, file, stat, base, dump, cb)
 	    'mput -f ' + tmpfile + ' ' + base + '/info.json && ' +
 	    thoth.reexec + ' load ' + tmpfile);
 
-	mod_fs.chmodSync(cmdfile, 0o775);
+	mod_fs.chmodSync(cmdfile, parseInt("775", 8));
 
 	mod_child.execFile(cmdfile , [], function (err) {
 		checkError(err);
