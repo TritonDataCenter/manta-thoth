@@ -20,6 +20,7 @@
 		"thoth": "bin/thoth"
 	},
 	"files": [
+		"bin",
 		"bin/sdc-thoth",
 		"bin/sdc-thoth-install",
 		"bin/sdc-thoth-update",
