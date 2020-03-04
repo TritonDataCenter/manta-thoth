@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env node --abort-on-uncaught-exception
 
 /*
  * Copyright 2020 Joyent, Inc.
@@ -203,6 +203,28 @@ var time2seconds = function (t)
 		return (n * s);
 
 	return (n * time2seconds(s));
+};
+
+/*
+ * A readable stream containing a string.
+ */
+util.inherits(ReadableStringStream, Readable);
+
+function ReadableStringStream(str)
+{
+	Readable.call(this);
+	this.str = str;
+};
+
+ReadableStringStream.prototype._read = function ()
+{
+	if (this.str) {
+		var buf = new Buffer(this.str, 'ascii');
+		this.push(buf);
+		this.str = null;
+	} else {
+		this.push(null);
+	}
 };
 
 var parseAge = function (t)
@@ -1785,24 +1807,24 @@ handlers.info = function (client, argv)
 	}
 }
 
+loadInfo = function (info, cb)
+{
+	info.id = mod_path.basename(info.name);
+
+	mod_r.connect(thoth.db, function (err, conn) {
+		if (err) {
+			cb(err);
+			return;
+		}
+
+		mod_r.table('dumps').insert(info,
+		    { conflict: 'replace' }).run(conn, cb);
+	});
+}
+
 handlers.load = function (client, argv)
 {
-	var id;
 	var info;
-
-	var load = function (info) {
-		info.id = id = info.name.split('/').pop();
-
-		mod_r.connect(thoth.db, function (err, conn) {
-			if (err) {
-				fatal('couldn\'t connect to database: ' +
-				    err.message);
-			}
-
-			mod_r.table('dumps').insert(info,
-			    { conflict: 'replace' }).run(conn, done);
-		});
-	};
 
 	var done = function (err, results) {
 		if (!err) {
@@ -1810,7 +1832,13 @@ handlers.load = function (client, argv)
 			process.exit(0);
 		}
 
-		fatal('couldn\'t insert ' + id + ': ' + err.message);
+		var stream = new ReadableStringStream(JSON.stringify(info));
+
+		client.put(info.name + thoth.unindexed, stream, function () {
+			// ignore a failure to mput here
+			fatal('couldn\'t insert ' + info.id +
+			    ': ' + err.message);
+		});
 	};
 
 	if (argv.length != 1)
@@ -1820,8 +1848,10 @@ handlers.load = function (client, argv)
 	 * First, try to load this as a file...
 	 */
 	try {
-		load(JSON.parse(mod_fs.readFileSync(argv[0])));
+		info = JSON.parse(mod_fs.readFileSync(argv[0]));
+		loadInfo(info, done);
 		return;
+
 	} catch	(err) {
 		if (err.code != 'ENOENT')
 			fatal('couldn\'t parse ' + argv[0] + ': ' + err);
@@ -1836,7 +1866,10 @@ handlers.load = function (client, argv)
 	if (argv[0].indexOf('=') != -1 || argv[0].length < thoth.hashlen)
 		fatal('need a fully specified dump to load');
 
-	infoGet(client, argv[0], load, true);
+	infoGet(client, argv[0], function (res) {
+		info = res;
+		loadInfo(info, done);
+	}, true);
 }
 
 // FIXME: jobless version
@@ -1947,20 +1980,43 @@ handlers.debug = function (client, argv)
 	}
 }
 
-// FIXME: jobless version?
+/*
+ * Index the info.json at the given Manta path.
+ *
+ * Note that this uses a new DB connection each time as it's called in a
+ * parallel manner.
+ */
+indexPath = function (client, path, cb)
+{
+	client.get(path, function (err, stream, _) {
+		// skip any dir with a missing info.json
+		if (err && err.code == 'ResourceNotFound') {
+			return;
+		}
+
+		checkError(err);
+
+		var json = '';
+
+		stream.on('data', function (data) {
+			json += data;
+		});
+
+		stream.on('end', function () {
+			try {
+				loadInfo(JSON.parse(json), cb);
+			} catch (ex) {
+				console.log('skipping invalid JSON at ' + path);
+				cb();
+			}
+		});
+	});
+}
+
 handlers.index = function (client, argv)
 {
-	var scanComplete = false;
-	var id, time;
+	var time;
 	var seen = {};
-
-	var job = { phases: [ {
-		type: 'map',
-		exec: 'DTRACE_DOF_INIT_DISABLE=1 ' +
-		    thothLoadCmd('$MANTA_INPUT_FILE')
-	} ] };
-
-	jobSetThoth(job);
 
 	for (i = 0; i < argv.length; i++) {
 		var filter = argv[i].split('=');
@@ -2003,81 +2059,67 @@ handlers.index = function (client, argv)
 		status('indexing all dumps');
 	}
 
-	var readDir = function () {
-		var ls = new ThothListStream({
-			manta: client,
-			path: thoth.path,
-			time: !!time,
-			filter: filter
-		});
+	var ls = new ThothListStream({
+		manta: client,
+		path: thoth.path,
+		time: !!time,
+		filter: filter
+	});
 
-		ls.on('error', checkError);
+	ls.on('error', checkError);
 
-		ls.pipe(mapStream(function (ent, push, next) {
-			var add = function (what) {
-				var path = mod_path.join(thoth.path, what);
-				if (seen.hasOwnProperty(path))
-					return;
-				seen[path] = true;
-				push(path);
-			};
+	var bs = ls.pipe(mapStream(function (ent, push, next) {
+		var add = function (what) {
+			var path = mod_path.join(thoth.path, what);
+			if (seen.hasOwnProperty(path))
+				return;
+			seen[path] = true;
+			push(path);
+		};
 
-			switch (ent.type) {
-			case 'object':
-				if (!endsWith(ent.name, thoth.unindexed)) {
-					break;
-				}
-				add(ent.name.substr(0, ent.name.indexOf(
-				    thoth.unindexed)) + '/info.json');
-				break;
-
-			case 'directory':
-				if (ent.name.length !== thoth.hashlen) {
-					break;
-				}
-				add(mod_path.join(ent.name, 'info.json'));
+		switch (ent.type) {
+		case 'object':
+			if (!endsWith(ent.name, thoth.unindexed)) {
 				break;
 			}
+			add(ent.name.substr(0, ent.name.indexOf(
+			    thoth.unindexed)) + '/info.json');
+			break;
 
-			next();
-
-		})).pipe(batchStream(250)).pipe(forEachStream(function (keys,
-		    next) {
-			client.addJobKey(id, keys, function (err) {
-				checkError(err);
-				next();
-			});
-
-		}, function (err, res) {
-			checkError(err);
-			client.endJob(id, function (err) {
-				checkError(err);
-				jobWait(client, id, jobOutput(client, alldone));
-			});
-		}));
-	};
-
-	/*
-	 * Before we create a job, make sure that we can connect to the
-	 * database.
-	 */
-	mod_r.connect(thoth.db, function (err, conn) {
-		if (err) {
-			fatal('couldn\'t connect to database: ' +
-			    err.message);
+		case 'directory':
+			if (ent.name.length !== thoth.hashlen) {
+				break;
+			}
+			add(mod_path.join(ent.name, 'info.json'));
+			break;
 		}
 
-		client.createJob(job, function (err, jobid) {
+		next();
+
+	})).pipe(batchStream(250));
+
+	var done = false;
+
+	bs.on('data', function (data) {
+		mod_vasync.forEachParallel({
+		    func: function (path, next) {
+			indexPath(client, path, next);
+		    },
+		    inputs: data
+		}, function (err) {
 			checkError(err);
-			status('created job ' + (id = jobid));
-			readDir();
+
+			if (done) {
+				status('indexed ' + Object.keys(seen).length +
+				    ' dumps');
+				process.exit(0);
+			}
 		});
 	});
 
-	var alldone = function () {
-		status('indexed ' + Object.keys(seen).length + ' dumps');
-		process.exit(0);
-	};
+	bs.on('error', checkError);
+
+	bs.on('end', function() { done = true; });
 }
 
 /*
@@ -2703,8 +2745,7 @@ var setAnalyzer = function (client, exec, cb, opts)
 	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + ' || ' +
-	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	' + thothLoadCmd('$propout') + '\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_unset()\n';
@@ -2717,8 +2758,7 @@ var setAnalyzer = function (client, exec, cb, opts)
 	cmd += '	cat $THOTH_INFO | json -e ';
 	cmd += '"this.properties.$1=undefined" > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + ' || ' +
-	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	' + thothLoadCmd('$propout') + '\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_ticket()\n';
@@ -2733,8 +2773,7 @@ var setAnalyzer = function (client, exec, cb, opts)
 	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + ' || ' +
-	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	' + thothLoadCmd('$propout') + '\n';
 	cmd += '}\n\n';
 
 	cmd += 'thoth_unticket()\n';
@@ -2744,8 +2783,7 @@ var setAnalyzer = function (client, exec, cb, opts)
 	cmd += '	cat $THOTH_INFO | json -e "this.ticket=undefined"';
 	cmd += ' > $propout\n';
 	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + ' || ' +
-	    'mln $THOTH_INFO_OBJECT $THOTH_UNINDEXED_OBJECT\n';
+	cmd += '	' + thothLoadCmd('$propout') + '\n';
 	cmd += '}\n\n';
 
 	var asset = thoth.analyzers + '/.thoth.' + process.pid + '.' +
@@ -2773,27 +2811,7 @@ var setAnalyzer = function (client, exec, cb, opts)
 	cmd += '	' + exec + '\n';
 	cmd += 'fi\n';
 
-	/*
-	 * Create a simple Readable to mput our string.
-	 */
-	util.inherits(Analyzer, Readable);
-
-	function Analyzer(str) {
-		Readable.call(this);
-		this.str = str;
-	};
-
-	Analyzer.prototype._read = function () {
-		if (this.str) {
-			var buf = new Buffer(this.str, 'ascii');
-			this.push(buf);
-			this.str = null;
-		} else {
-			this.push(null);
-		}
-	};
-
-	var analyzer = new Analyzer(cmd);
+	var analyzer = new ReadableStringStream(cmd);
 
 	client.put(asset, analyzer, function (err) {
 		checkError(err);
