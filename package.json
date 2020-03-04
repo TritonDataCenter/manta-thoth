@@ -19,13 +19,6 @@
 	"bin": {
 		"thoth": "bin/thoth"
 	},
-	"files": [
-		"bin",
-		"bin/sdc-thoth",
-		"bin/sdc-thoth-install",
-		"bin/sdc-thoth-update",
-		"bin/sdc-thoth-update-all"
-	],
 	"repository": {
 		"type": "git",
 		"url": "http://github.com/joyent/manta-thoth.git"
