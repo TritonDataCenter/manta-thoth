@@ -1872,9 +1872,27 @@ handlers.load = function (client, argv)
 	}, true);
 }
 
+/*
+ * Manta jobs / mlogin were a great match for "thoth debug" in particular, so a
+ * jobless version is necessarily less pleasant.
+ *
+ * Instead, we set up a local environment under /var/tmp, with all the usual
+ * environment variables set.
+ *
+ * As we now need to pull the input file locally, we'll store that in
+ * /var/tmp/thoth/cache for future re-use (and warn the user that we did so).
+ */
+debugJobless = function (client, argv)
+{
+}
+
 // FIXME: jobless version
 handlers.debug = function (client, argv)
 {
+	if (!jobby()) {
+		return debugJobless(client, argv);
+	}
+
 	var mlogin = mod_path.dirname(require.resolve('manta')) +
 	    '/../bin/mlogin';
 	var analyzer = undefined;
