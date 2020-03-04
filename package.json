@@ -13,7 +13,8 @@
 		"readable-stream": ">=1.1.9",
 		"rethinkdb": "2.0.0",
 		"smartdc": "^9.0.0",
-		"sprintf": "0.1.1"
+		"sprintf": "0.1.1",
+		"vasync": "^2.2.0"
 	},
 	"bin": {
 		"thoth": "bin/thoth"

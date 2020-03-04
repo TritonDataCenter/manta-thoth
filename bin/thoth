@@ -17,6 +17,7 @@ var mod_r = require('rethinkdb');
 var mod_vm = require('vm');
 var mod_assert = require('assert');
 var mod_jsprim = require('jsprim');
+var mod_vasync = require('vasync');
 
 var mod_stream = require('stream');
 if (!mod_stream.Readable) {
@@ -968,6 +969,33 @@ thothLoadCmd = function (what)
 	    'load ' + what);
 }
 
+/*
+ * This is like thothLoadCmd(), but runnning locally rather than in a job
+ * context.
+ *
+ * We need to use a script here due to limits on child_process.exec()'s
+ * first argument length.
+ */
+thothLoad = function (json, path, cb)
+{
+	var tmpfile = '/tmp/json.' + process.pid;
+	var cmdfile = '/tmp/thoth.' + process.pid;
+
+	mod_fs.writeFileSync(cmdfile, '#!/bin/bash\n\n' +
+	    'echo \'' + json + '\' >' + tmpfile + ' && ' +
+	    'mput -f ' + tmpfile + ' ' + path + '/info.json && ' +
+	    thoth.reexec + ' load ' + tmpfile);
+
+	mod_fs.chmodSync(cmdfile, parseInt("775", 8));
+
+	mod_child.execFile(cmdfile , [], function (err) {
+		checkError(err);
+		mod_fs.unlinkSync(tmpfile);
+		mod_fs.unlinkSync(cmdfile);
+		cb();
+	});
+}
+
 dumpsFromStdin = function (client, opts, cb)
 {
 	process.stdin.resume();
@@ -1428,6 +1456,7 @@ var processCrash = function (client, stat, base, dump, cb)
 	});
 }
 
+// FIXME: replace with local version / analyzer
 var uncompressCrash = function (client, stat, base, dump, cb)
 {
 	var vmcore = base + '/vmcore.0';
@@ -1475,27 +1504,7 @@ var processCrashJobless = function (client, file, stat, base, dump, cb)
 	    base, dump, hdr.dump_utsname.version, hdr.dump_utsname.nodename,
 	    time);
 
-	var tmpfile = '/tmp/json.' + process.pid;
-	var cmdfile = '/tmp/thoth.' + process.pid;
-
-	/*
-	 * We need to use a script here due to limits on child_process.exec()'s
-	 * first argument length.
-	 */
-
-	mod_fs.writeFileSync(cmdfile, '#!/bin/bash\n\n' +
-	    'echo \'' + json + '\' >' + tmpfile + ' && ' +
-	    'mput -f ' + tmpfile + ' ' + base + '/info.json && ' +
-	    thoth.reexec + ' load ' + tmpfile);
-
-	mod_fs.chmodSync(cmdfile, parseInt("775", 8));
-
-	mod_child.execFile(cmdfile , [], function (err) {
-		checkError(err);
-		mod_fs.unlinkSync(tmpfile);
-		mod_fs.unlinkSync(cmdfile);
-		cb();
-	});
+	thothLoad(json, base, cb);
 }
 
 var putCrash = function (client, file, stat, base, cb)
@@ -1830,6 +1839,7 @@ handlers.load = function (client, argv)
 	infoGet(client, argv[0], load, true);
 }
 
+// FIXME: jobless version
 handlers.debug = function (client, argv)
 {
 	var mlogin = mod_path.dirname(require.resolve('manta')) +
@@ -1937,6 +1947,7 @@ handlers.debug = function (client, argv)
 	}
 }
 
+// FIXME: jobless version?
 handlers.index = function (client, argv)
 {
 	var scanComplete = false;
@@ -2457,48 +2468,52 @@ handlers.report = function (client, argv)
 	});
 };
 
-var setProp = function (client, keys, prop, val, sysprop)
+var updateProp = function (client, conn, path, prop, val, sysprop, cb)
 {
-	var tmp = '/tmp/tmp.json';
-	var json = '/tmp/new.json';
-	var prefix = '', suffix = '';
+	var base = mod_path.dirname(path);
+	var name = mod_path.basename(base);
 
-	var cmd = 'cat > ' + tmp + ' <<EOF\n';
+	// FIXME: presumes indexed
 
-	if (!sysprop) {
-		prefix = '{ "properties": ';
-		suffix = '} ';
-	}
+	mod_r.table('dumps').get(name).run(conn, function (err, info) {
+		checkError(err);
 
-	cmd += prefix + '{ "' + prop + '": ';
-	cmd += JSON.stringify(val);
+		if (sysprop) {
+			info[prop] = val;
+		} else {
+			if (info.properties === undefined)
+				info.properties = {};
+			info.properties[prop] = val;
+		}
 
-	cmd += '} ' + suffix + '\nEOF\n';
-
-	cmd += 'cat $MANTA_INPUT_FILE ' + tmp + ' | json --deep-merge > ' +
-	    json + ';';
-	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;';
-	cmd += thothLoadCmd(json) + ' || ' +
-	    'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
-	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
-
-	jobOneKey(client, keys, cmd,
-	    function () { process.exit(0) }, jobSetThoth);
+		thothLoad(JSON.stringify(info), base, cb);
+	});
 }
 
-var unsetProp = function (client, keys, prop, sysprop)
+var setProp = function (client, paths, prop, val, sysprop)
 {
-	var json = '/tmp/new.json';
-	var cmd = 'cat $MANTA_INPUT_FILE | json -e "this.' +
-	    (sysprop ? '' : 'properties.') +
-	    prop + '=undefined" > ' + json + '; ';
-	cmd += 'mput -f ' + json + ' $MANTA_INPUT_OBJECT ;';
-	cmd += thothLoadCmd(json) + ' || ' +
-	    'mln $MANTA_INPUT_OBJECT ' + thoth.path + '/' +
-	    '`basename $(dirname $MANTA_INPUT_OBJECT)`' + thoth.unindexed;
+	mod_r.connect(thoth.db, function (err, conn) {
+		if (err) {
+			fatal('couldn\'t connect to database: ' +
+			    err.message);
+		}
 
-	jobOneKey(client, keys, cmd,
-	    function () { process.exit(0) }, jobSetThoth);
+		mod_vasync.forEachPipeline({
+		    func: function (path, cb) {
+			updateProp(client, conn, path, prop,
+			    val, sysprop, cb);
+		    },
+		    inputs: paths
+	        }, function (err) {
+			checkError(err);
+			process.exit(0);
+		});
+	});
+}
+
+var unsetProp = function (client, paths, prop, sysprop)
+{
+	setProp(client, paths, prop, undefined, sysprop);
 }
 
 var partialArgToInfo = function (arg, cb, errcb)
@@ -2797,6 +2812,7 @@ var analyzerIsDcmd = function (analyzer)
 	    analyzer.indexOf('/') > 0 || analyzer.indexOf('=') > 0);
 }
 
+// FIXME: jobless version
 var runAnalyzer = function (client, keys, analyzer)
 {
 	var cmd;
