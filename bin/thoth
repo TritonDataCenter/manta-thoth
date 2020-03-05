@@ -240,6 +240,14 @@ var jobby = function (httpres)
 	return (thoth.jobby);
 }
 
+var checkJobby = function (client, cb)
+{
+	client.info('/thoth/stor/thoth', function (err, info) {
+		thoth.jobby = (info.headers['server'] === 'Manta/1');
+		cb(thoth.jobby);
+	});
+}
+
 /*
  * To determine if the specified file is a core file, we need to read the
  * ELF headers and look at the type.  This routine will fail if it's not
@@ -1932,7 +1940,7 @@ var downloadDump = function(client, info, cb)
 
 /*
  * Manta jobs / mlogin were a great match for "thoth debug" in particular, so a
- * jobless version is necessarily less pleasant.
+ * jobless version is necessarily less pleasant: a local job for local people.
  *
  * Instead, we set up a local environment under /var/tmp, with all the usual
  * environment variables set.
@@ -1940,7 +1948,7 @@ var downloadDump = function(client, info, cb)
  * As we now need to pull the input file locally, we'll store that in
  * /var/tmp/thoth/cache for future re-use (and warn the user that we did so).
  */
-var runLocal = function(client, info, analyzer, execAnalyzer, cb)
+var localJob = function(client, info, analyzer, execAnalyzer, cb)
 {
 	downloadDump(client, info, function (err, dump_path) {
 		checkError(err);
@@ -1981,12 +1989,8 @@ var runLocal = function(client, info, analyzer, execAnalyzer, cb)
 	});
 }
 
-handlers.debug = function (client, argv)
+var debugJob = function(client, info, analyzer)
 {
-	var mlogin = mod_path.dirname(require.resolve('manta')) +
-	    '/../bin/mlogin';
-	var analyzer = undefined;
-
 	var analyzerCmd = function (args) {
 		var cmd = 'export THOTH_ANALYZER=/var/tmp/' + analyzer + '\n';
 		var path = [ thoth.analyzers, analyzer ].join('/');
@@ -2024,65 +2028,77 @@ handlers.debug = function (client, argv)
 		return (cmd);
 	};
 
-	var debug = function (info) {
-		status('debugging ' +
-		    mod_path.basename(mod_path.dirname(info.dump)));
+	status('debugging ' + mod_path.basename(mod_path.dirname(info.dump)));
 
-		if (!jobby()) {
-			return runLocal(client, info, analyzer, false,
-			    function (err) {
+
+	var info = info.name + '/info.json';
+	var cmd = 'echo "thoth: dump info is in \\$THOTH_INFO"\n';
+
+	var args = [ info.dump ];
+
+	var dummy = { phases: [ {} ] };
+
+	jobSetThoth(dummy);
+
+	cmd += dummy.phases[0].init + '\n';
+
+	if (analyzer) {
+		cmd += analyzerCmd(args);
+	} else {
+		/*
+		 * LIBPROC_INCORE_ELF=1 prevents us from loading
+		 * whatever node binary happens to be in $PATH. This is
+		 * necessary when debugging cores that do not match the
+		 * bitness of the node binary found in $PATH.
+		 */
+		cmd += 'LIBPROC_INCORE_ELF=1 mdb $MANTA_INPUT_FILE';
+	}
+
+	setAnalyzer(client, cmd, function (asset) {
+		args = args.concat([ '-s', asset,
+		    '-s', dummy.phases[0].assets[0],
+		    '-c', '/assets/' + asset,
+		    '--memory=2048' ]);
+
+		var child = mod_child.spawn(mlogin, args,
+		    { stdio: 'inherit' });
+
+		child.on('close', function (code) {
+			status('debugger exited with code ' + code);
+
+			client.unlink(asset, function (err) {
 				checkError(err);
-				process.exit(0);
+				process.exit(code);
 			});
-		}
+		});
+	}, { loadv8: analyzer ? false : true });
+}
 
-		var info = info.name + '/info.json';
-		var cmd = 'echo "thoth: dump info is in \\$THOTH_INFO"\n';
-
-		var args = [ info.dump ];
-
-		var dummy = { phases: [ {} ] };
-		jobSetThoth(dummy);
-		cmd += dummy.phases[0].init + '\n';
-
-		if (analyzer) {
-			cmd += analyzerCmd(args);
-		} else {
-			/*
-			 * LIBPROC_INCORE_ELF=1 prevents us from loading
-			 * whatever node binary happens to be in $PATH. This is
-			 * necessary when debugging cores that do not match the
-			 * bitness of the node binary found in $PATH.
-			 */
-			cmd += 'LIBPROC_INCORE_ELF=1 mdb $MANTA_INPUT_FILE';
-		}
-
-		setAnalyzer(client, cmd, function (asset) {
-			args = args.concat([ '-s', asset,
-			    '-s', dummy.phases[0].assets[0],
-			    '-c', '/assets/' + asset,
-			    '--memory=2048' ]);
-
-			var child = mod_child.spawn(mlogin, args,
-			    { stdio: 'inherit' });
-
-			child.on('close', function (code) {
-				status('debugger exited with code ' + code);
-
-				client.unlink(asset, function (err) {
-					checkError(err);
-					process.exit(code);
-				});
-			});
-		}, { loadv8: analyzer ? false : true });
-	};
+handlers.debug = function (client, argv)
+{
+	var mlogin = mod_path.dirname(require.resolve('manta')) +
+	    '/../bin/mlogin';
+	var analyzer = undefined;
 
 	if (argv.length > 1 && argv[argv.length - 1].indexOf('=') == -1)
 		analyzer = argv.pop();
 
-	// note we need bypass: true here to populate thoth.jobby
+	var doDebug = function (info) {
+		checkJobby(client, function (isJobby) {
+			if (isJobby) {
+				debugJob(client, info, analyzer);
+			} else {
+				localJob(client, info, analyzer, false,
+				    function (err) {
+					checkError(err);
+					process.exit(0);
+				});
+			}
+		});
+	};
+
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
-		infoGet(client, argv[0], debug, true);
+		infoGet(client, argv[0], doDebug);
 		return;
 	}
 
@@ -2092,7 +2108,7 @@ handlers.debug = function (client, argv)
 			    ' dumps; cannot debug interactively');
 		}
 
-		infoGet(client, dumps[0].id, debug, true);
+		infoGet(client, dumps[0].id, doDebug);
 	});
 }
 
@@ -2142,6 +2158,9 @@ handlers.index = function (client, argv)
 
 		time = parseAge(filter[1]);
 	}
+
+	status('using database at ' + thoth.db.host + ':' + thoth.db.port +
+	    ' (configured ' + thoth.config_src + ')');
 
 	var filter = undefined;
 	if (time) {
@@ -3101,9 +3120,8 @@ var runAnalyzerJobs = function (client, keys, analyzer)
 
 var runAnalyzer = function (client, dumps, analyzer)
 {
-	// we need to set thoth.jobby
-	client.info('/thoth/stor/thoth', function (err, info) {
-		if (jobby(info)) {
+	checkJobby(client, function (isJobby) {
+		if (isJobby) {
 			runAnalyzerJobs(client, keys, analyzer);
 			return;
 		}
@@ -3115,7 +3133,7 @@ var runAnalyzer = function (client, dumps, analyzer)
 		vasync_extra.forEachParallelBatched({
 		    func: function (id, next) {
 			infoGet(client, id, function (info) {
-				runLocal(client, info, analyzer, true, next);
+				localJob(client, info, analyzer, true, next);
 			});
 		    },
 		    inputs: ids,
@@ -3640,6 +3658,7 @@ handlers.autoanalyzers = function (client, argv)
 	usage('unrecognized autoanalyzers subcommand "' + argv[0] + '"');
 }
 
+// FIXME: broken?
 handlers.logs = function (client, argv)
 {
 	var results = [];
@@ -3753,6 +3772,9 @@ handlers.init = function ()
 		});
 	};
 
+	status('using database at ' + thoth.db.host + ':' + thoth.db.port +
+	    ' (configured ' + thoth.config_src + ')');
+
 	mod_r.connect(thoth.db, function (err, conn) {
 		if (err) {
 			fatal('couldn\'t connect to database: ' +
@@ -3811,10 +3833,12 @@ var configure = function (cb)
 		}
 	}
 
-	if (conf)
-		return (cb(client, 'from environment'));
+	if (conf) {
+		thoth.config_src = 'from environment';
+		return (cb(client));
+	}
 
-	var parseconf = function (data, where) {
+	var parseconf = function (data) {
 		if (!data.db)
 			fatal('expected \'db\' member in ' + file);
 
@@ -3827,14 +3851,15 @@ var configure = function (cb)
 			thoth.db[k] = data.db[k];
 		}
 
-		return (cb(client, where));
+		return (cb(client));
 	};
 
 	/*
 	 * Next, look for a configuration file in our home directory.
 	 */
 	try {
-		parseconf(JSON.parse(mod_fs.readFileSync(file)), 'locally');
+		thoth.config_src = 'locally';
+		parseconf(JSON.parse(mod_fs.readFileSync(file)));
 		return;
 	} catch (err) {
 		if (err.code != 'ENOENT')
@@ -3849,7 +3874,8 @@ var configure = function (cb)
 	client.get(object, function (err, stream, res) {
 		if (err) {
 			if (err.code === 'ResourceNotFound') {
-				cb(client, 'from source');
+				thoth.config_src = 'from source';
+				cb(client);
 				return;
 			}
 
@@ -3864,7 +3890,8 @@ var configure = function (cb)
 		});
 
 		stream.on('end', function () {
-			parseconf(JSON.parse(output), 'from Manta');
+			thoth.config_src = 'from Manta';
+			parseconf(JSON.parse(output));
 		});
 	});
 }
