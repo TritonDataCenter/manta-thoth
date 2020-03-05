@@ -1893,10 +1893,14 @@ var localEnv = function(info, dump_path, analyzer, runAnalyzer)
 {
 	env = process.env;
 
+	// FIXME if job, change to thothLoadCmd
 	env['THOTH'] = thoth.reexec;
+	env['THOTH_SUPPORTS_JOBS'] = "false";
 	env['MANTA_INPUT_FILE'] = dump_path;
 	env['MANTA_INPUT_OBJECT'] = info.dump;
 	env['THOTH_RUN_ANALYZER'] = (runAnalyzer ? 'true' : 'false');
+	env['THOTH_INITFILE'] = mod_path.join(__dirname,
+	    '../lib/thoth-init.sh');
 
 	if (analyzer === undefined)
 		return (env);
@@ -1962,10 +1966,10 @@ var localJob = function(client, info, analyzer, execAnalyzer, cb)
 		    prefix: 'thoth-'}, function (err, dir) {
 			checkError(err);
 
-			var initfile = mod_path.join(__dirname,
-			    '../lib/thothenv.sh');
 			var env = localEnv(info, dump_path, analyzer,
 			    execAnalyzer);
+			// FIXME: what about a job??
+			var initfile = env['THOTH_INITFILE'];
 
 			var args = [ '--init-file', initfile ];
 
@@ -2962,7 +2966,7 @@ var setV8 = function (opts)
 };
 
 /*
- * This is only for job context: see ../lib/thothenv.sh for a local run.
+ * This is only for job context: see ../lib/thoth-init.sh for a local run.
  */
 var setAnalyzer = function (client, exec, cb, opts)
 {

@@ -119,9 +119,12 @@ thoth_unticket()
 	thoth_unset_sys ticket
 }
 
+thoth_analyze()
+{
+	. $THOTH_ANALYZER
+}
+
 export THOTH_TMPDIR=$(pwd)
-# FIXME
-export THOTH_SUPPORTS_JOBS=false
 export THOTH_DUMP=$MANTA_INPUT_FILE
 export THOTH_NAME=$(basename $(dirname $MANTA_INPUT_FILE))
 export THOTH_INFO=$THOTH_TMPDIR/info.json
@@ -132,8 +135,10 @@ export THOTH_INFO_OBJECT=$THOTH_DIR/info.json
 # As `thoth load` only updates the index, it is the info of record, but we fall
 # back to the Manta file if needed.
 #
-$THOTH info $THOTH_NAME >$THOTH_INFO 2>/dev/null ||
-    mget -q $THOTH_INFO_OBJECT >$THOTH_INFO 2>/dev/null
+if [[ ! -f $THOTH_INFO ]]; then
+	$THOTH info $THOTH_NAME >$THOTH_INFO 2>/dev/null ||
+	    mget -q $THOTH_INFO_OBJECT >$THOTH_INFO 2>/dev/null
+fi
 
 export THOTH_TYPE=`cat $THOTH_INFO | json type`
 
@@ -190,41 +195,31 @@ if [[ "$THOTH_RUN_ANALYZER" = "true" ]]; then
 
 		exec mdb -e "$THOTH_ANALYZER_DCMD" "$THOTH_DUMP"
 	else
-		. $THOTH_ANALYZER
+		thoth_analyze
 	fi
 	exit $?
 fi
 
 # thoth debug ...
 
-if [[ -n "$THOTH_ANALYZER" ]]; then
-	# 'orig=/var/tmp/' + analyzer + '.orig\n';
-	# 'mget ' + path + ' > $THOTH_ANALYZER 2> /dev/null\n';
-	# 'if [[ $? -ne 0 ]]; then\n';
-	# '	echo "thoth: ' + analyzer + ' not found"\n';
-	# '	exit 1\n';
-	# 'fi\n';
-	# 'cp $THOTH_ANALYZER $orig\n';
-	# 'chmod +x $THOTH_ANALYZER\n';
+if [[ -n "$THOTH_ANALYZER_EDIT" ]]; then
+	echo "thoth: analyzer $THOTH_ANALYZER_NAME is in $THOTH_ANALYZER"
+	echo "thoth: run \"thoth_analyze\" to run the analyzer"
+	echo "thoth: any changes to \$THOTH_ANALYZER will be stored upon successful exit"
+elif [[ -n "$THOTH_ANALYZER" ]]; then
+	orig=$THOTH_ANALYZER.orig
+	cp $THOTH_ANALYZER $orig
+	export THOTH_ANALYZER_EDIT=true
 
-	# 'echo "thoth: analyzer \\"' + analyzer + '\\" is in ' +
-	#	    '\\$THOTH_ANALYZER"\n';
-	# 'echo "thoth: run \\\"thoth_analyze\\\" to run ' +
-	#	    '\\$THOTH_ANALYZER"\n';
-	# 'echo "thoth: any changes to \\$THOTH_ANALYZER will ' +
-	#	    'be stored upon successful exit"\n';
-	# 'echo "alias thoth_analyze=\\\"' + analyze +
-	#	    '\\\"" >> ~/.bashrc\n';
-	# 'if ! bash -i; then\n';
-	# '	exit $?\n';
-	# 'fi\n';
-	# 'if cmp $THOTH_ANALYZER $orig > /dev/null 2>&1; then\n';
-	# '	exit 0\n';
-	# 'fi\n';
-	# 'echo "thoth: storing changes to \\$THOTH_ANALYZER"\n';
-	# 'mput -f $THOTH_ANALYZER ' + path + ' 2> /dev/null\n';
-	# 'echo "thoth: done"\n';
-	: # FIXME
+	if bash --init-file $THOTH_INITFILE -i; then
+		if ! cmp $THOTH_ANALYZER $orig > /dev/null 2>&1; then
+			echo "thoth: storing changes to \$THOTH_ANALYZER"
+			mput -qf $THOTH_ANALYZER $THOTH_ANALYZER_OBJECT
+			echo "thoth: done"
+		fi
+	fi
+
+	exit $?
 else
 	 #
 	 # LIBPROC_INCORE_ELF=1 prevents us from loading whatever node binary
