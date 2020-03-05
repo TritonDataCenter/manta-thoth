@@ -1856,7 +1856,6 @@ handlers.load = function (client, argv)
 	}
 
 	if (info) {
-		// FIXME: should this update Manta file?
 		loadInfo(info, done);
 		return;
 	}
@@ -1965,7 +1964,6 @@ var localJob = function(client, info, analyzer, execAnalyzer, cb)
 
 			var env = localEnv(info, dump_path, analyzer,
 			    execAnalyzer);
-			// FIXME: what about a job??
 			var initfile = env['THOTH_INITFILE'];
 
 			var args = [ '--init-file', initfile ];

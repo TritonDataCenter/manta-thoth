@@ -211,6 +211,7 @@ elif [[ -n "$THOTH_ANALYZER" ]]; then
 	cp $THOTH_ANALYZER $orig
 	export THOTH_ANALYZER_EDIT=true
 
+	# FIXME: this won't work in job mode unless it becomes an assert.
 	if bash --init-file $THOTH_INITFILE -i; then
 		if ! cmp $THOTH_ANALYZER $orig > /dev/null 2>&1; then
 			echo "thoth: storing changes to \$THOTH_ANALYZER"
