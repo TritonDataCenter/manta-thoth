@@ -4,29 +4,23 @@
  * Copyright 2020 Joyent, Inc.
  */
 
-var mod_ctype = require('ctype');
-var mod_path = require('path');
-var mod_fs = require('fs');
-var util = require('util');
-var mod_crypto = require('crypto');
-var mod_bunyan = require('bunyan');
-var mod_manta = require('manta');
-var mod_zlib = require('zlib');
-var mod_child = require('child_process');
-var mod_r = require('rethinkdb');
-var mod_vm = require('vm');
 var mod_assert = require('assert');
+var mod_bunyan = require('bunyan');
+var mod_child = require('child_process');
+var mod_crypto = require('crypto');
+var mod_ctype = require('ctype');
+var mod_fs = require('fs');
 var mod_jsprim = require('jsprim');
+var mod_manta = require('manta');
+var mod_path = require('path');
+var mod_r = require('rethinkdb');
+var mod_stream = require('readable-stream');
+var mod_tmp = require('tmp');
 var mod_vasync = require('vasync');
+var mod_vm = require('vm');
+var mod_zlib = require('zlib');
 
-var mod_stream = require('stream');
-if (!mod_stream.Readable) {
-	/*
-	 * If we're on node 0.8, pull in streams2 explicitly.
-	 */
-	mod_stream = require('readable-stream');
-}
-
+var util = require('util');
 var Readable = require('stream').Readable;
 var sprintf = require('sprintf').sprintf;
 var endsWith = mod_jsprim.endsWith;
@@ -37,6 +31,7 @@ var forEachStream = require('../lib/foreachstream');
 var batchStream = require('../lib/batchstream');
 var mapStream = require('../lib/mapstream');
 var jsondiff = require('../lib/jsondiff');
+var vasync_extra = require('../lib/vasync-extra');
 
 var handlers = {};
 var autoanalyzers = {};
@@ -238,6 +233,8 @@ var jobby = function (httpres)
 {
 	if (thoth.jobby !== undefined)
 		return (thoth.jobby);
+
+	mod_assert.ok(httpres);
 
 	thoth.jobby = (httpres.headers['server'] === 'Manta/1');
 	return (thoth.jobby);
@@ -1849,12 +1846,14 @@ handlers.load = function (client, argv)
 	 */
 	try {
 		info = JSON.parse(mod_fs.readFileSync(argv[0]));
-		loadInfo(info, done);
-		return;
-
 	} catch	(err) {
 		if (err.code != 'ENOENT')
 			fatal('couldn\'t parse ' + argv[0] + ': ' + err);
+	}
+
+	if (info) {
+		loadInfo(info, done);
+		return;
 	}
 
 	/*
@@ -1873,6 +1872,64 @@ handlers.load = function (client, argv)
 }
 
 /*
+ * If our analyzer begins with "::" or "$" or contains within it an mdb verb
+ * (namely, "/", "=" or "::"), we assume it to be an mdb dcmd.
+ */
+var analyzerIsDcmd = function (analyzer)
+{
+	return (analyzer.indexOf('::') != -1 || analyzer.indexOf('$') == 0 ||
+	    analyzer.indexOf('/') > 0 || analyzer.indexOf('=') > 0);
+}
+
+var localEnv = function(info, dump_path, analyzer, runAnalyzer)
+{
+	env = process.env;
+	env['MANTA_INPUT_FILE'] = dump_path;
+	env['MANTA_INPUT_OBJECT'] = info.dump;
+
+	env['THOTH_RUN_ANALYZER'] = (runAnalyzer ? 'true' : 'false');
+
+	if (analyzer === undefined)
+		return (env);
+
+	if (analyzerIsDcmd(analyzer)) {
+		env['THOTH_ANALYZER_DCMD'] = analyzer;
+		return (env);
+	}
+
+	env['THOTH_ANALYZER_NAME'] = analyzer;
+	env['THOTH_ANALYZER_OBJECT'] = mod_path.join(thoth.analyzers, analyzer);
+
+	return (env);
+}
+
+var downloadDump = function(client, info, cb)
+{
+	var dump_path = mod_path.join('/var/tmp/thoth/cache', info.id,
+	    mod_path.basename(info.dump));
+
+	if (mod_fs.existsSync(dump_path)) {
+		return (cb(null, dump_path));
+	}
+
+	mod_fs.mkdirSync(mod_path.dirname(dump_path), { recursive: true });
+
+	mod_child.exec('mget -o ' + dump_path + ' ' + info.dump,
+	    function (err) {
+		if (err) {
+			try {
+				mod_fs.unlinkSync(dump_path);
+			} catch {
+			}
+
+			checkError(err);
+		}
+
+		return (cb(null, dump_path));
+	});
+}
+
+/*
  * Manta jobs / mlogin were a great match for "thoth debug" in particular, so a
  * jobless version is necessarily less pleasant.
  *
@@ -1882,17 +1939,48 @@ handlers.load = function (client, argv)
  * As we now need to pull the input file locally, we'll store that in
  * /var/tmp/thoth/cache for future re-use (and warn the user that we did so).
  */
-debugJobless = function (client, argv)
+var runLocal = function(client, info, analyzer, execAnalyzer, cb)
 {
+	downloadDump(client, info, function (err, dump_path) {
+		checkError(err);
+
+		mod_tmp.setGracefulCleanup();
+
+		mod_tmp.dir({
+		    dir: '/var/tmp',
+		    unsafeCleanup: true,
+		    prefix: 'thoth-'}, function (err, dir) {
+			checkError(err);
+
+			var initfile = mod_path.join(__dirname,
+			    '../lib/thothenv.sh');
+			var env = localEnv(info, dump_path, analyzer,
+			    execAnalyzer);
+
+			var args = [ '--init-file', initfile ];
+
+			if (!execAnalyzer)
+				args.push('-i');
+
+			child = mod_child.spawn('/bin/bash', args,
+			    { cwd: dir, env: env, stdio: 'inherit' });
+
+			child.on('close', function (code) {
+				console.log('\n\ndump file kept: ' + dump_path);
+
+				if (code) {
+					cb('shell returned code ' + code);
+					return;
+				}
+
+				cb();
+			});
+		});
+	});
 }
 
-// FIXME: jobless version
 handlers.debug = function (client, argv)
 {
-	if (!jobby()) {
-		return debugJobless(client, argv);
-	}
-
 	var mlogin = mod_path.dirname(require.resolve('manta')) +
 	    '/../bin/mlogin';
 	var analyzer = undefined;
@@ -1934,23 +2022,22 @@ handlers.debug = function (client, argv)
 		return (cmd);
 	};
 
-	var debug = function (dump) {
-		if (dump instanceof Array) {
-			if (dump.length > 1) {
-				fatal('specification matches ' + dump.length +
-				    ' dumps; cannot debug interactively');
-			}
+	var debug = function (info) {
+		status('debugging ' +
+		    mod_path.basename(mod_path.dirname(info.dump)));
 
-			dump = dump[0];
+		if (!jobby()) {
+			return runLocal(client, info, analyzer, false,
+			    function (err) {
+				checkError(err);
+				process.exit(0);
+			});
 		}
 
-		status('debugging ' +
-		    mod_path.basename(mod_path.dirname(dump.dump)));
-
-		var info = dump.name + '/info.json';
+		var info = info.name + '/info.json';
 		var cmd = 'echo "thoth: dump info is in \\$THOTH_INFO"\n';
 
-		var args = [ dump.dump ];
+		var args = [ info.dump ];
 
 		var dummy = { phases: [ {} ] };
 		jobSetThoth(dummy);
@@ -1991,11 +2078,20 @@ handlers.debug = function (client, argv)
 	if (argv.length > 1 && argv[argv.length - 1].indexOf('=') == -1)
 		analyzer = argv.pop();
 
+	// note we need bypass: true here to populate thoth.jobby
 	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
-		infoGet(client, argv[0], debug);
-	} else {
-		dumpsFromSpec(client, argv, { fields: [ 'dump' ] }, debug);
+		infoGet(client, argv[0], debug, true);
+		return;
 	}
+
+	dumpsFromSpec(client, argv, { fields: [ 'id' ] }, function (dumps) {
+		if (dumps.length > 1) {
+			fatal('specification matches ' + dumps.length +
+			    ' dumps; cannot debug interactively');
+		}
+
+		infoGet(client, dumps[0].id, debug, true);
+	});
 }
 
 /*
@@ -2528,54 +2624,6 @@ handlers.report = function (client, argv)
 	});
 };
 
-var updateProp = function (client, conn, path, prop, val, sysprop, cb)
-{
-	var base = mod_path.dirname(path);
-	var name = mod_path.basename(base);
-
-	// FIXME: presumes indexed
-
-	mod_r.table('dumps').get(name).run(conn, function (err, info) {
-		checkError(err);
-
-		if (sysprop) {
-			info[prop] = val;
-		} else {
-			if (info.properties === undefined)
-				info.properties = {};
-			info.properties[prop] = val;
-		}
-
-		thothLoad(JSON.stringify(info), base, cb);
-	});
-}
-
-var setProp = function (client, paths, prop, val, sysprop)
-{
-	mod_r.connect(thoth.db, function (err, conn) {
-		if (err) {
-			fatal('couldn\'t connect to database: ' +
-			    err.message);
-		}
-
-		mod_vasync.forEachPipeline({
-		    func: function (path, cb) {
-			updateProp(client, conn, path, prop,
-			    val, sysprop, cb);
-		    },
-		    inputs: paths
-	        }, function (err) {
-			checkError(err);
-			process.exit(0);
-		});
-	});
-}
-
-var unsetProp = function (client, paths, prop, sysprop)
-{
-	setProp(client, paths, prop, undefined, sysprop);
-}
-
 var partialArgToInfo = function (arg, cb, errcb)
 {
 	mod_r.connect(thoth.db, function (err, conn) {
@@ -2659,6 +2707,8 @@ var argToInfo = function (client, arg, cb, bypass)
 
 			checkError(err);
 
+			jobby(res);
+
 			cb(object, err, stream, res);
 		});
 	};
@@ -2680,228 +2730,51 @@ var dumpToInfoPath = function (dump)
 	return ([ dump.name, 'info.json'].join('/'));
 }
 
-var setV8 = function (opts)
+var updateProp = function (client, conn, path, prop, val, sysprop, cb)
 {
-	var cmd = '';
+	var base = mod_path.dirname(path);
+	var name = mod_path.basename(base);
 
-	cmd = 'if [[ `cat $THOTH_INFO | json cmd` == "node" ]]; then\n';
-	cmd += '	FILE_STR="$(file $THOTH_DUMP)"\n';
-	cmd += '	MDB_PROC=/usr/lib/mdb/proc\n';
-	cmd += '	MDB_V8=mdb_v8_ia32.so\n';
-	cmd += '	MDB_V8_DIR=/root/mdb\n';
-	cmd += '	MDB_V8_LATEST=/Joyent_Dev/public/mdb_v8/latest\n';
-	cmd += '	if [[ $FILE_STR == *"ELF 64-bit"* ]]; then\n';
-	cmd += '		MDB_PROC=/usr/lib/mdb/proc/amd64\n';
-	cmd += '		MDB_V8=mdb_v8_amd64.so\n';
-	cmd += '		MDB_V8_DIR=/root/mdb/amd64\n';
-	cmd += '	fi\n';
-	cmd += '\n';
-	cmd += '	if [[ ! -d $MDB_V8_DIR ]]; then\n';
-	cmd += '		mkdir -p $MDB_V8_DIR\n';
-	cmd += '	fi\n';
-	cmd += '\n';
-	cmd += '	if [[ ! -f $MDB_V8_DIR/v8.so ]]; then\n';
-	cmd += '		MDB_V8_LATEST=`mget -q ' +
-	    thoth.v8 + '`\n';
-	cmd += '		mget -q $MDB_V8_LATEST/$MDB_V8 ' +
-	    '> $MDB_V8_DIR/v8.so\n';
-	cmd += '	fi\n';
-	cmd += '\n';
-	cmd += '	if [[ ! -f ~/.mdbrc ]]; then\n';
-	cmd += '		echo "::set -L $MDB_V8_DIR:$MDB_PROC" ' +
-	    '> ~/.mdbrc\n';
-
-	if (opts && opts.loadv8)
-		cmd += '		echo "::load v8.so" >> ~/.mdbrc\n';
-
-	cmd += '	fi\n';
-	cmd += 'fi\n';
-
-	return (cmd);
-};
-
-var setAnalyzer = function (client, exec, cb, opts)
-{
-	var cmd = '';
-
-	if (thoth.analyzerdebug)
-		cmd += 'set -o xtrace\n';
-
-	cmd += 'thoth_fatal()\n';
-	cmd += '{\n';
-	cmd += '	echo thoth: "$*" 1>&2\n';
-	cmd += '	exit 1\n';
-	cmd += '}\n\n';
-
-	cmd += 'thoth_onexit()\n';
-	cmd += '{\n';
-	cmd += '	[[ $1 -ne 0 ]] || exit 0\n';
-	cmd += '	thoth_fatal "error exit status $1"\n';
-	cmd += '}\n\n';
-
-	cmd += 'thoth_set()\n';
-	cmd += '{\n';
-	cmd += '	local prop=$1\n';
-	cmd += '	local propfile=/tmp/thoth.prop\n';
-	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
-	cmd += '		thoth_fatal "failed to specify property"\n';
-	cmd += '	fi\n\n';
-	cmd += '	if [[ "$#" -eq 2 ]]; then\n';
-	cmd += '		local propval="$2"\n';
-	cmd += '	else\n';
-	cmd += '		local propval=`cat | ';
-	cmd += ' sed \'s/\\\\\\\\/\\\\\\\\\\\\\\\\/g\'';
-	cmd += ' | ';
-	cmd += ' sed \'s/"/\\\\\\\\"/g\' | ';
-	cmd += ' sed \':a;N;$!ba;s/\\\\n/\\\\\\\\n/g\'`\n';
-	cmd += '	fi\n\n';
-
-	cmd += '	echo "{ \\"properties\\": { \\"$prop\\": ';
-	cmd += '\\"$propval\\" } }" > $propfile\n';
-	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
-	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
-	cmd += ' > $propout\n';
-	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + '\n';
-	cmd += '}\n\n';
-
-	cmd += 'thoth_unset()\n';
-	cmd += '{\n';
-	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
-	cmd += '		thoth_fatal "failed to specify property"\n';
-	cmd += '	fi\n\n';
-	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
-	cmd += '	cat $THOTH_INFO | json -e ';
-	cmd += '"this.properties.$1=undefined" > $propout\n';
-	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + '\n';
-	cmd += '}\n\n';
-
-	cmd += 'thoth_ticket()\n';
-	cmd += '{\n';
-	cmd += '	local propfile=/tmp/thoth.prop\n';
-	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
-	cmd += '		thoth_fatal "failed to specify ticket"\n';
-	cmd += '	fi\n\n';
-	cmd += '	echo "{ \\"ticket\\": \\"$1\\" }" > $propfile\n';
-	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
-	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
-	cmd += ' > $propout\n';
-	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + '\n';
-	cmd += '}\n\n';
-
-	cmd += 'thoth_unticket()\n';
-	cmd += '{\n';
-	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
-	cmd += '	cat $THOTH_INFO | json -e "this.ticket=undefined"';
-	cmd += ' > $propout\n';
-	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + '\n';
-	cmd += '}\n\n';
-
-	var asset = thoth.analyzers + '/.thoth.' + process.pid + '.' +
-	    (new Date().valueOf() / 1000);
-
-	cmd += 'if [[ -z "$THOTH_DUMP" ]]; then\n';
-	cmd += '	export DTRACE_DOF_INIT_DISABLE=1\n';
-	cmd += '	export THOTH_DUMP=$MANTA_INPUT_FILE\n';
-	cmd += '	THOTH_NAME=`basename $(dirname $MANTA_INPUT_FILE)`\n';
-	cmd += '	export THOTH_NAME\n';
-	cmd += '	export THOTH_INFO=/var/tmp/info.json\n';
-	cmd += '	THOTH_DIR=`dirname $MANTA_INPUT_OBJECT`\n';
-	cmd += '	export THOTH_INFO_OBJECT=${THOTH_DIR}/info.json\n'
-	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO 2> /dev/null\n\n';
-	cmd += '	export THOTH_TYPE=`cat $THOTH_INFO | json type`\n';
-	cmd += '	export THOTH_ASSET_OBJECT=' + asset + '\n';
-	cmd += '	export THOTH_ASSET=/assets/' + asset + '\n';
-	cmd += '	echo "source $THOTH_ASSET" > ~/.bashrc\n';
-	cmd += '	echo "PS1=\\\"${MANTA_USER}@thoth # \\\"" >> ' +
-			    '~/.bashrc\n';
-	cmd += '	export THOTH_UNINDEXED_OBJECT=${THOTH_DIR}' +
-			    thoth.unindexed + '\n\n';
-	cmd += setV8(opts);
-
-	cmd += '	' + exec + '\n';
-	cmd += 'fi\n';
-
-	var analyzer = new ReadableStringStream(cmd);
-
-	client.put(asset, analyzer, function (err) {
+	mod_r.table('dumps').get(name).run(conn, function (err, info) {
 		checkError(err);
-		cb(asset);
-	});
-}
 
-var analyzerIsDcmd = function (analyzer)
-{
-	/*
-	 * If our analyzer begins with "::" or "$" or contains within it an
-	 * mdb verb (namely, "/", "=" or "::"), we assume it to be an mdb
-	 * dcmd.
-	 */
-	return (analyzer.indexOf('::') != -1 || analyzer.indexOf('$') == 0 ||
-	    analyzer.indexOf('/') > 0 || analyzer.indexOf('=') > 0);
-}
-
-// FIXME: jobless version
-var runAnalyzer = function (client, keys, analyzer)
-{
-	var cmd;
-	var dcmd = false;
-
-	if (analyzerIsDcmd(analyzer)) {
-		status('executing mdb dcmd "' + analyzer + '"');
-		cmd = 'echo $THOTH_NAME: `echo \'' + analyzer +
-		    '\' | mdb $THOTH_DUMP 2> /dev/null`';
-		dcmd = true;
-	} else {
-		if (analyzer.indexOf('/') != 0)
-			analyzer = thoth.analyzers + '/' + analyzer;
-
-		cmd = 'cat $THOTH_ASSET /assets/' + analyzer + ' | bash\n';
-	}
-
-	setAnalyzer(client, cmd, function (asset) {
-		var preflight = function (job) {
-			job.phases[0].assets = [ asset ];
-
-			if (!dcmd)
-				job.phases[0].assets.push(analyzer);
-
-			job.phases.push({ exec: 'cat', type: 'reduce' });
-			jobSetThoth(job);
-		};
-
-		var done = function (output) {
-			console.log(output);
-			client.unlink(asset, function (err) {
-				checkError(err);
-				process.exit(0);
-			});
+		if (sysprop) {
+			info[prop] = val;
+		} else {
+			if (info.properties === undefined)
+				info.properties = {};
+			info.properties[prop] = val;
 		}
 
-		jobOneKey(client, keys, 'bash < /assets/' + asset,
-		    jobOutput(client, done), preflight);
+		thothLoad(JSON.stringify(info), base, cb);
 	});
 }
 
-var processAnalyzers = function (analyzers)
+var setProp = function (client, paths, prop, val, sysprop)
 {
-	var all = [], i;
+	mod_r.connect(thoth.db, function (err, conn) {
+		if (err) {
+			fatal('couldn\'t connect to database: ' +
+			    err.message);
+		}
 
-	for (analyzer in analyzers)
-		all.push(analyzers[analyzer].path);
+		mod_vasync.forEachPipeline({
+		    func: function (path, cb) {
+			updateProp(client, conn, path, prop,
+			    val, sysprop, cb);
+		    },
+		    inputs: paths
+	        }, function (err) {
+			checkError(err);
+			process.exit(0);
+		});
+	});
+}
 
-	all.sort();
-
-	for (i = 0; i < all.length; i++)
-		console.log(all[i]);
-};
+var unsetProp = function (client, paths, prop, sysprop)
+{
+	setProp(client, paths, prop, undefined, sysprop);
+}
 
 handlers.set = function (client, argv, sysprop)
 {
@@ -3019,6 +2892,256 @@ handlers.unticket = function (client, argv)
 	return (handlers.unset(client, argv, true));
 }
 
+var setV8 = function (opts)
+{
+	var cmd = '';
+
+	cmd = 'if [[ `cat $THOTH_INFO | json cmd` == "node" ]]; then\n';
+	cmd += '	FILE_STR="$(file $THOTH_DUMP)"\n';
+	cmd += '	MDB_PROC=/usr/lib/mdb/proc\n';
+	cmd += '	MDB_V8=mdb_v8_ia32.so\n';
+	cmd += '	MDB_V8_DIR=/root/mdb\n';
+	cmd += '	MDB_V8_LATEST=/Joyent_Dev/public/mdb_v8/latest\n';
+	cmd += '	if [[ $FILE_STR == *"ELF 64-bit"* ]]; then\n';
+	cmd += '		MDB_PROC=/usr/lib/mdb/proc/amd64\n';
+	cmd += '		MDB_V8=mdb_v8_amd64.so\n';
+	cmd += '		MDB_V8_DIR=/root/mdb/amd64\n';
+	cmd += '	fi\n';
+	cmd += '\n';
+	cmd += '	if [[ ! -d $MDB_V8_DIR ]]; then\n';
+	cmd += '		mkdir -p $MDB_V8_DIR\n';
+	cmd += '	fi\n';
+	cmd += '\n';
+	cmd += '	if [[ ! -f $MDB_V8_DIR/v8.so ]]; then\n';
+	cmd += '		MDB_V8_LATEST=`mget -q ' +
+	    thoth.v8 + '`\n';
+	cmd += '		mget -q $MDB_V8_LATEST/$MDB_V8 ' +
+	    '> $MDB_V8_DIR/v8.so\n';
+	cmd += '	fi\n';
+	cmd += '\n';
+	cmd += '	if [[ ! -f ~/.mdbrc ]]; then\n';
+	cmd += '		echo "::set -L $MDB_V8_DIR:$MDB_PROC" ' +
+	    '> ~/.mdbrc\n';
+
+	if (opts && opts.loadv8)
+		cmd += '		echo "::load v8.so" >> ~/.mdbrc\n';
+
+	cmd += '	fi\n';
+	cmd += 'fi\n';
+
+	return (cmd);
+};
+
+/*
+ * This is only for job context: see ../lib/thothenv.sh for a local run.
+ */
+var setAnalyzer = function (client, exec, cb, opts)
+{
+	var cmd = '';
+
+	if (thoth.analyzerdebug)
+		cmd += 'set -o xtrace\n';
+
+	cmd += 'thoth_fatal()\n';
+	cmd += '{\n';
+	cmd += '	echo thoth: "$*" 1>&2\n';
+	cmd += '	exit 1\n';
+	cmd += '}\n\n';
+
+	cmd += 'thoth_onexit()\n';
+	cmd += '{\n';
+	cmd += '	[[ $1 -ne 0 ]] || exit 0\n';
+	cmd += '	thoth_fatal "error exit status $1"\n';
+	cmd += '}\n\n';
+
+	cmd += 'thoth_set()\n';
+	cmd += '{\n';
+	cmd += '	local prop=$1\n';
+	cmd += '	local propfile=/tmp/thoth.prop\n';
+	cmd += '	local propout=/tmp/thoth.out\n';
+	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
+	cmd += '		thoth_fatal "failed to specify property"\n';
+	cmd += '	fi\n\n';
+	cmd += '	if [[ "$#" -eq 2 ]]; then\n';
+	cmd += '		local propval="$2"\n';
+	cmd += '	else\n';
+	cmd += '		local propval=`cat | ';
+	cmd += ' sed \'s/\\\\\\\\/\\\\\\\\\\\\\\\\/g\'';
+	cmd += ' | ';
+	cmd += ' sed \'s/"/\\\\\\\\"/g\' | ';
+	cmd += ' sed \':a;N;$!ba;s/\\\\n/\\\\\\\\n/g\'`\n';
+	cmd += '	fi\n\n';
+
+	cmd += '	echo "{ \\"properties\\": { \\"$prop\\": ';
+	cmd += '\\"$propval\\" } }" > $propfile\n';
+	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
+	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
+	cmd += ' > $propout\n';
+	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
+	cmd += '	' + thothLoadCmd('$propout') + '\n';
+	cmd += '}\n\n';
+
+	cmd += 'thoth_unset()\n';
+	cmd += '{\n';
+	cmd += '	local propout=/tmp/thoth.out\n';
+	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
+	cmd += '		thoth_fatal "failed to specify property"\n';
+	cmd += '	fi\n\n';
+	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
+	cmd += '	cat $THOTH_INFO | json -e ';
+	cmd += '"this.properties.$1=undefined" > $propout\n';
+	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
+	cmd += '	' + thothLoadCmd('$propout') + '\n';
+	cmd += '}\n\n';
+
+	cmd += 'thoth_ticket()\n';
+	cmd += '{\n';
+	cmd += '	local propfile=/tmp/thoth.prop\n';
+	cmd += '	local propout=/tmp/thoth.out\n';
+	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
+	cmd += '		thoth_fatal "failed to specify ticket"\n';
+	cmd += '	fi\n\n';
+	cmd += '	echo "{ \\"ticket\\": \\"$1\\" }" > $propfile\n';
+	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
+	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
+	cmd += ' > $propout\n';
+	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
+	cmd += '	' + thothLoadCmd('$propout') + '\n';
+	cmd += '}\n\n';
+
+	cmd += 'thoth_unticket()\n';
+	cmd += '{\n';
+	cmd += '	local propout=/tmp/thoth.out\n';
+	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
+	cmd += '	cat $THOTH_INFO | json -e "this.ticket=undefined"';
+	cmd += ' > $propout\n';
+	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
+	cmd += '	' + thothLoadCmd('$propout') + '\n';
+	cmd += '}\n\n';
+
+	var asset = thoth.analyzers + '/.thoth.' + process.pid + '.' +
+	    (new Date().valueOf() / 1000);
+
+	cmd += 'if [[ -z "$THOTH_DUMP" ]]; then\n';
+	cmd += '	export DTRACE_DOF_INIT_DISABLE=1\n';
+	cmd += '	export THOTH_DUMP=$MANTA_INPUT_FILE\n';
+	cmd += '	THOTH_NAME=`basename $(dirname $MANTA_INPUT_FILE)`\n';
+	cmd += '	export THOTH_NAME\n';
+	cmd += '	export THOTH_INFO=/var/tmp/info.json\n';
+	cmd += '	THOTH_DIR=`dirname $MANTA_INPUT_OBJECT`\n';
+	cmd += '	export THOTH_INFO_OBJECT=${THOTH_DIR}/info.json\n'
+	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO 2> /dev/null\n\n';
+	cmd += '	export THOTH_TYPE=`cat $THOTH_INFO | json type`\n';
+	cmd += '	export THOTH_ASSET_OBJECT=' + asset + '\n';
+	cmd += '	export THOTH_ASSET=/assets/' + asset + '\n';
+	cmd += '	echo "source $THOTH_ASSET" > ~/.bashrc\n';
+	cmd += '	echo "PS1=\\\"${MANTA_USER}@thoth # \\\"" >> ' +
+			    '~/.bashrc\n';
+	cmd += '	export THOTH_UNINDEXED_OBJECT=${THOTH_DIR}' +
+			    thoth.unindexed + '\n\n';
+	cmd += setV8(opts);
+
+	cmd += '	' + exec + '\n';
+	cmd += 'fi\n';
+
+	var analyzer = new ReadableStringStream(cmd);
+
+	client.put(asset, analyzer, function (err) {
+		checkError(err);
+		cb(asset);
+	});
+}
+
+var runAnalyzerJobs = function (client, keys, analyzer)
+{
+	var cmd;
+	var dcmd = false;
+
+	if (analyzerIsDcmd(analyzer)) {
+		status('executing mdb dcmd "' + analyzer + '"');
+		cmd = 'echo $THOTH_NAME: `echo \'' + analyzer +
+		    '\' | mdb $THOTH_DUMP 2> /dev/null`';
+		dcmd = true;
+	} else {
+		if (analyzer.indexOf('/') != 0)
+			analyzer = thoth.analyzers + '/' + analyzer;
+
+		cmd = 'cat $THOTH_ASSET /assets/' + analyzer + ' | bash\n';
+	}
+
+	setAnalyzer(client, cmd, function (asset) {
+		var preflight = function (job) {
+			job.phases[0].assets = [ asset ];
+
+			if (!dcmd)
+				job.phases[0].assets.push(analyzer);
+
+			job.phases.push({ exec: 'cat', type: 'reduce' });
+			jobSetThoth(job);
+		};
+
+		var done = function (output) {
+			console.log(output);
+			client.unlink(asset, function (err) {
+				checkError(err);
+				process.exit(0);
+			});
+		}
+
+		jobOneKey(client, keys, 'bash < /assets/' + asset,
+		    jobOutput(client, done), preflight);
+	});
+}
+
+var runAnalyzer = function (client, dumps, analyzer)
+{
+	// we need to set thoth.jobby
+	client.info('/thoth/stor/thoth', function (err, info) {
+		if (jobby(info)) {
+			runAnalyzerJobs(client, keys, analyzer);
+			return;
+		}
+
+		var ids = dumps.map(function (d) {
+			return mod_path.basename(mod_path.dirname(d));
+		});
+
+		vasync_extra.forEachParallelBatched({
+		    func: function (id, next) {
+			infoGet(client, id, function (info) {
+				runLocal(client, info, analyzer, true, next);
+			});
+		    },
+		    inputs: ids,
+		    batchSize: 5
+		}, function (err) {
+			checkError(err);
+			process.exit(0);
+		});
+	});
+}
+
+handlers.analyze = function (client, argv)
+{
+	var analyzer = argv.pop();
+
+	if (!analyzer)
+		fatal('need to specify an analyzer');
+
+	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
+		infoGet(client, argv[0], function (info) {
+			runAnalyzer(client, [ info.dump ], analyzer);
+		});
+
+		return;
+	}
+
+	dumpsFromSpec(client, argv, { fields: [ 'dump' ] }, function (dumps) {
+		var keys = dumps.map(function (d) { return (d.dump); });
+		runAnalyzer(client, keys, analyzer);
+	});
+};
+
 handlers.analyzer = function (client, argv)
 {
 	var remove = true;
@@ -3062,6 +3185,19 @@ handlers.analyzer = function (client, argv)
 		});
 	});
 }
+
+var processAnalyzers = function (analyzers)
+{
+	var all = [], i;
+
+	for (analyzer in analyzers)
+		all.push(analyzers[analyzer].path);
+
+	all.sort();
+
+	for (i = 0; i < all.length; i++)
+		console.log(all[i]);
+};
 
 handlers.analyzers = function (client, argv)
 {
@@ -3131,31 +3267,6 @@ handlers.analyzers = function (client, argv)
 		});
 
 		res.on('end', function () { done(); });
-	});
-};
-
-handlers.analyze = function (client, argv)
-{
-	var analyzer = argv.pop();
-
-	if (!analyzer)
-		fatal('need to specify an analyzer');
-
-	if (argv.length == 1 && argv[0].indexOf('=') == -1) {
-		infoGet(client, argv[0], function (output) {
-			runAnalyzer(client, [ output.dump ], analyzer);
-		});
-
-		return;
-	}
-
-	dumpsFromSpec(client, argv, { fields: [ 'dump' ] }, function (dumps) {
-		var dump, keys = [];
-
-		for (dump in dumps)
-			keys.push(dumps[dump].dump);
-
-		runAnalyzer(client, keys, analyzer);
 	});
 };
 
