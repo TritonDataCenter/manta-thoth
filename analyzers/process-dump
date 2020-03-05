@@ -19,9 +19,14 @@ if [[ $(json properties.uncompressed <$THOTH_INFO) = "true" ]]; then
 else
 	savecore -vf $THOTH_DUMP -d $(pwd)
 	VMCORE=vmcore.${THOTH_DUMP##*.}
-	# this is a little bit cheeky, but it's better than downloading again...
+
+	#
+	# This is a little bit cheeky, but it's better than keeping a useless
+	# dump file, and downloading the vmcore again.
+	#
 	if [[ "$THOTH_SUPPORTS_JOBS" = "false" ]]; then
 		cp $VMCORE /var/tmp/thoth/cache/$THOTH_NAME/
+		rm -f $THOTH_DUMP
 	fi
 	mput -f $VMCORE $THOTH_DIR/$VMCORE
 	thoth_set_sys dump $THOTH_DIR/$VMCORE
@@ -41,4 +46,4 @@ mdb -e '$c 0' $VMCORE | \
 cat $THOTH_INFO stack.out | json --deep-merge >$THOTH_INFO.tmp
 mv $THOTH_INFO.tmp $THOTH_INFO
 mput -qf $THOTH_INFO $THOTH_INFO_OBJECT
-thoth load $THOTH_INFO
+thoth_load

@@ -2,7 +2,7 @@
 #
 # Copyright 2020 Joyent, Inc.
 #
-# This initializes a local `thoth debug` or `thoth analyze run` instance.
+# This initializes a local `thoth debug` or `thoth analyze` instance.
 #
 
 thoth_fatal()
@@ -23,13 +23,17 @@ thoth_onexit()
 #
 thoth_load()
 {
-	local tmpfile=$THOTH_TMPDIR/thoth.out.$$
-	local infile=$1
+	local update=$1
 
-	cat $THOTH_INFO $infile | json --deep-merge >$tmpfile
-	mv $tmpfile $THOTH_INFO
+	if [[ -f "$update" ]]; then
+		local tmpfile=$THOTH_TMPDIR/thoth.out.$$
+
+		cat $THOTH_INFO $update | json --deep-merge >$tmpfile
+		mv $tmpfile $THOTH_INFO
+	fi
+
 	mput -qf $THOTH_INFO $THOTH_INFO_OBJECT
-	thoth load $THOTH_INFO
+	$THOTH load $THOTH_INFO
 }
 
 #
@@ -88,7 +92,7 @@ thoth_unset_sys()
 	cat $THOTH_INFO | json -e "this.$1=undefined" >$tmpfile
 	mv $tmpfile $THOTH_INFO
 	mput -qf $propout $THOTH_INFO_OBJECT
-	thoth load $propout
+	$THOTH load $propout
 }
 
 thoth_unset()
@@ -102,7 +106,7 @@ thoth_unset()
 	cat $THOTH_INFO | json -e "this.properties.$1=undefined" >$tmpfile
 	mv $tmpfile $THOTH_INFO
 	mput -qf $propout $THOTH_INFO_OBJECT
-	thoth load $propout
+	$THOTH load $propout
 }
 
 thoth_ticket()
@@ -116,6 +120,7 @@ thoth_unticket()
 }
 
 export THOTH_TMPDIR=$(pwd)
+# FIXME
 export THOTH_SUPPORTS_JOBS=false
 export THOTH_DUMP=$MANTA_INPUT_FILE
 export THOTH_NAME=$(basename $(dirname $MANTA_INPUT_FILE))
@@ -127,7 +132,7 @@ export THOTH_INFO_OBJECT=$THOTH_DIR/info.json
 # As `thoth load` only updates the index, it is the info of record, but we fall
 # back to the Manta file if needed.
 #
-thoth info $THOTH_NAME >$THOTH_INFO 2>/dev/null ||
+$THOTH info $THOTH_NAME >$THOTH_INFO 2>/dev/null ||
     mget -q $THOTH_INFO_OBJECT >$THOTH_INFO 2>/dev/null
 
 export THOTH_TYPE=`cat $THOTH_INFO | json type`

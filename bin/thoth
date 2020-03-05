@@ -1892,9 +1892,10 @@ var analyzerIsDcmd = function (analyzer)
 var localEnv = function(info, dump_path, analyzer, runAnalyzer)
 {
 	env = process.env;
+
+	env['THOTH'] = thoth.reexec;
 	env['MANTA_INPUT_FILE'] = dump_path;
 	env['MANTA_INPUT_OBJECT'] = info.dump;
-
 	env['THOTH_RUN_ANALYZER'] = (runAnalyzer ? 'true' : 'false');
 
 	if (analyzer === undefined)
@@ -1975,7 +1976,10 @@ var localJob = function(client, info, analyzer, execAnalyzer, cb)
 			    { cwd: dir, env: env, stdio: 'inherit' });
 
 			child.on('close', function (code) {
-				console.log('\n\ndump file kept: ' + dump_path);
+				if (mod_fs.existsSync(dump_path)) {
+					console.log('\n\ndump file kept: ' +
+					    dump_path);
+				}
 
 				if (code != 0) {
 					cb(new Error('spawn failed with ' +
@@ -2757,7 +2761,7 @@ var updateProp = function (client, conn, path, prop, val, sysprop, cb)
 	var name = mod_path.basename(base);
 
 	if (!sysprop) {
-		sysprop = thoth.sysprops.prop;
+		sysprop = thoth.sysprops[prop];
 	}
 
 	mod_r.table('dumps').get(name).run(conn, function (err, info) {
@@ -2966,6 +2970,8 @@ var setAnalyzer = function (client, exec, cb, opts)
 
 	if (thoth.analyzerdebug)
 		cmd += 'set -o xtrace\n';
+
+	// FIXME: merge with thothenv
 
 	cmd += 'thoth_fatal()\n';
 	cmd += '{\n';
