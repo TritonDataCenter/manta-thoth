@@ -57,16 +57,16 @@ var thoth = {
 		authKey: 'bagnoogle',
 		table: 'dumps'
 	},
-	indexed: {
+	sysprops: {
 		name: true,
-		time: true,
-		type: true,
-		cmd: true,
-		node: true,
 		dump: true,
-		ticket: true
+		platform: true,
+		node: true,
+		version: true,
+		type: true,
+		time: true,
+		stack: true
 	},
-	useindex: true,
 	analyzerdebug: false,
 	jobby: undefined,
 	v8: '/Joyent_Dev/public/mdb_v8/latest',
@@ -1386,6 +1386,7 @@ var putCore = function (client, file, stat, base, cb)
 	 */
 	var stream = mod_fs.createReadStream(file);
 	var dump = base + '/' + mod_path.basename(file);
+	// FIXME: remove this and zlib??
 	var gzip = mod_zlib.createGzip();
 
 	status('uploading ' + mod_path.basename(dump) + ' to ' +
@@ -1475,7 +1476,6 @@ var processCrash = function (client, stat, base, dump, cb)
 	});
 }
 
-// FIXME: replace with local version / analyzer
 var uncompressCrash = function (client, stat, base, dump, cb)
 {
 	var vmcore = base + '/vmcore.0';
@@ -1825,7 +1825,6 @@ handlers.load = function (client, argv)
 
 	var done = function (err, results) {
 		if (!err) {
-			console.log(results);
 			process.exit(0);
 		}
 
@@ -1852,6 +1851,7 @@ handlers.load = function (client, argv)
 	}
 
 	if (info) {
+		// FIXME: should this update Manta file?
 		loadInfo(info, done);
 		return;
 	}
@@ -1903,6 +1903,7 @@ var localEnv = function(info, dump_path, analyzer, runAnalyzer)
 	return (env);
 }
 
+// FIXME: progress bar etc.
 var downloadDump = function(client, info, cb)
 {
 	var dump_path = mod_path.join('/var/tmp/thoth/cache', info.id,
@@ -1968,8 +1969,9 @@ var runLocal = function(client, info, analyzer, execAnalyzer, cb)
 			child.on('close', function (code) {
 				console.log('\n\ndump file kept: ' + dump_path);
 
-				if (code) {
-					cb('shell returned code ' + code);
+				if (code != 0) {
+					cb(new Error('spawn failed with ' +
+					    'return code ' + code));
 					return;
 				}
 
@@ -2734,6 +2736,10 @@ var updateProp = function (client, conn, path, prop, val, sysprop, cb)
 {
 	var base = mod_path.dirname(path);
 	var name = mod_path.basename(base);
+
+	if (!sysprop) {
+		sysprop = thoth.sysprops.prop;
+	}
 
 	mod_r.table('dumps').get(name).run(conn, function (err, info) {
 		checkError(err);
@@ -3896,10 +3902,6 @@ var main = function ()
 	configure(function (client, src) {
 		if (thoth.db.authKey == 'none')
 			delete thoth.db.authKey;
-
-		status('using database at ' +
-		    thoth.db.host + ':' + thoth.db.port +
-		    ' (configured ' + src + ')');
 
 		for (i = 0; i < thoth.cmds.length; i++) {
 			if (argv[2] != thoth.cmds[i].token)
