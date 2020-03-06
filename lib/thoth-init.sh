@@ -202,17 +202,18 @@ fi
 
 # thoth debug ...
 
-if [[ -n "$THOTH_ANALYZER_EDIT" ]]; then
+if [[ -n "$THOTH_ANALYZER" ]]; then
+	orig=$THOTH_ANALYZER.orig
+	cp $THOTH_ANALYZER $orig
+
 	echo "thoth: analyzer $THOTH_ANALYZER_NAME is in $THOTH_ANALYZER"
 	echo "thoth: run \"thoth_analyze\" to run the analyzer"
 	echo "thoth: any changes to \$THOTH_ANALYZER will be stored upon successful exit"
-elif [[ -n "$THOTH_ANALYZER" ]]; then
-	orig=$THOTH_ANALYZER.orig
-	cp $THOTH_ANALYZER $orig
-	export THOTH_ANALYZER_EDIT=true
 
-	# FIXME: this won't work in job mode unless it becomes an assert.
-	if bash --init-file $THOTH_INITFILE -i; then
+	# make sure thoth_*() are set
+	declare -f >tmp.initfile.$$;
+
+	if bash --init-file tmp.initfile.$$ -i; then
 		if ! cmp $THOTH_ANALYZER $orig > /dev/null 2>&1; then
 			echo "thoth: storing changes to \$THOTH_ANALYZER"
 			mput -qf $THOTH_ANALYZER $THOTH_ANALYZER_OBJECT
