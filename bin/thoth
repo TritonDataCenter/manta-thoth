@@ -1984,15 +1984,26 @@ var localJob = function(client, info, analyzer, execAnalyzer, cb)
 
 			var env = localEnv(info, dump_path, analyzer,
 			    execAnalyzer);
+
 			var initfile = env['THOTH_INITFILE'];
 
-			var args = [ '--init-file', initfile ];
+			var args = [];
+			var stdio = [ 'ignore', 'inherit', 'inherit' ];
 
-			if (!execAnalyzer)
-				args.push('-i');
+			/*
+			 * We need two different mechanisms: when
+			 * non-interactive, --init-file is ignored, but
+			 * $BASH_ENV is sourced instead.
+			 */
+			if (!execAnalyzer) {
+				stdio[0] = 'inherit';
+				args.push('--init-file', initfile, '-i');
+			} else {
+				env['BASH_ENV'] = initfile;
+			}
 
 			child = mod_child.spawn('/bin/bash', args,
-			    { cwd: dir, env: env, stdio: 'inherit' });
+			    { cwd: dir, env: env, stdio: stdio });
 
 			child.on('close', function (code) {
 				if (mod_fs.existsSync(dump_path)) {
