@@ -1365,14 +1365,14 @@ processCore = function (file, stat, base, dump, cb)
 	});
 };
 
-var progressBar = function (dump, stream, stat)
+var progressBar = function (dump, stream, size)
 {
 	if (!process.stderr.isTTY)
 		return;
 
 	var bar = new mod_manta.ProgressBar({
 		filename: 'thoth: ' + mod_path.basename(dump),
-		size: stat.size,
+		size: size,
 		nosize: false
 	});
 
@@ -1383,6 +1383,8 @@ var progressBar = function (dump, stream, stat)
 	stream.once('end', function () {
 		bar.end();
 	});
+
+	return (bar);
 };
 
 var putCore = function (client, file, stat, base, cb)
@@ -1397,7 +1399,7 @@ var putCore = function (client, file, stat, base, cb)
 	status('uploading ' + mod_path.basename(dump) + ' to ' +
 	    mod_path.basename(base));
 
-	progressBar(dump, stream, stat);
+	progressBar(dump, stream, stat.size);
 
 	var opts = {
 		copies: 1,
@@ -1541,7 +1543,7 @@ var putCrash = function (client, file, stat, base, cb)
 	status('uploading ' + mod_path.basename(dump) + ' to ' +
 	    mod_path.basename(base));
 
-	progressBar(dump, stream, stat);
+	progressBar(dump, stream, stat.size);
 
 	var opts = {
 		copies: 1,
@@ -1912,7 +1914,34 @@ var localEnv = function(info, dump_path, analyzer, runAnalyzer)
 	return (env);
 }
 
-// FIXME: progress bar etc.
+var mget = function(client, path, mpath, cb)
+{
+	var write = mod_fs.createWriteStream(path);
+
+	client.info(mpath, function (err, info) {
+		checkError(err);
+
+		var read = client.createReadStream(mpath);
+
+		progressBar(mpath, read, info.size);
+
+		read.pipe(write);
+
+		write.on('finish', function (err) {
+			if (err) {
+				try {
+					mod_fs.unlinkSync(path);
+				} catch {
+				}
+
+				checkError(err);
+				cb(err);
+			}
+			cb(null, path);
+		});
+	});
+}
+
 var downloadDump = function(client, info, cb)
 {
 	var dump_path = mod_path.join('/var/tmp/thoth/cache', info.id,
@@ -1922,21 +1951,12 @@ var downloadDump = function(client, info, cb)
 		return (cb(null, dump_path));
 	}
 
+	status('downloading ' + mod_path.basename(info.dump) +
+	    ' to local cache');
+
 	mod_fs.mkdirSync(mod_path.dirname(dump_path), { recursive: true });
 
-	mod_child.exec('mget -o ' + dump_path + ' ' + info.dump,
-	    function (err) {
-		if (err) {
-			try {
-				mod_fs.unlinkSync(dump_path);
-			} catch {
-			}
-
-			checkError(err);
-		}
-
-		return (cb(null, dump_path));
-	});
+	mget(client, dump_path, info.dump, cb);
 }
 
 /*
