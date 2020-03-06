@@ -3683,7 +3683,6 @@ handlers.autoanalyzers = function (client, argv)
 	usage('unrecognized autoanalyzers subcommand "' + argv[0] + '"');
 }
 
-// FIXME: broken?
 handlers.logs = function (client, argv)
 {
 	var results = [];
