@@ -3427,7 +3427,7 @@ handlers.logs = function (client, argv)
 	var timePath = function (hours) {
 		var t = new Date(new Date().valueOf() - (3600 * hours * 1000));
 
-		return (sprintf('%04d/%02d/%02d/%02d', t.getFullYear(),
+		return (sprintf('%04d/%02d/%02d/%02d', t.getUTCFullYear(),
 		    t.getUTCMonth() + 1, t.getUTCDate(), t.getUTCHours()));
 	};
 
