@@ -3438,7 +3438,7 @@ handlers.logs = function (client, argv)
 	var timePath = function (hours) {
 		var t = new Date(new Date().valueOf() - (3600 * hours * 1000));
 
-		return (sprintf('%02d/%02d/%02d',
+		return (sprintf('%04d/%02d/%02d/%02d', t.getUTCFullYear(),
 		    t.getUTCMonth() + 1, t.getUTCDate(), t.getUTCHours()));
 	};
 
@@ -3451,6 +3451,13 @@ handlers.logs = function (client, argv)
 		};
 
 		client.ls(path, function (err, res) {
+			if (err && err.name === 'NotFoundError') {
+				cb(done);
+				return;
+			}
+
+			checkError(err);
+
 			res.on('error', done);
 
 			res.on('directory', function (obj) {
