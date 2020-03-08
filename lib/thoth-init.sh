@@ -2,7 +2,8 @@
 #
 # Copyright 2020 Joyent, Inc.
 #
-# This initializes a local `thoth debug` or `thoth analyze` instance.
+# This initializes a `thoth debug` or `thoth analyze` instance. It runs either
+# as a bash "initfile", or in the context of a Manta job.
 #
 
 thoth_fatal()
@@ -140,7 +141,7 @@ if [[ ! -f $THOTH_INFO ]]; then
 	    mget -q $THOTH_INFO_OBJECT >$THOTH_INFO 2>/dev/null
 fi
 
-export THOTH_TYPE=`cat $THOTH_INFO | json type`
+export THOTH_TYPE=$(cat $THOTH_INFO | json type)
 
 export PS1="$THOTH_NAME@thoth $ "
 export DTRACE_DOF_INIT_DISABLE=1
@@ -175,7 +176,6 @@ export DTRACE_DOF_INIT_DISABLE=1
 if [[ -n "$THOTH_ANALYZER_OBJECT" ]]; then
 	export THOTH_ANALYZER=$THOTH_TMPDIR/$THOTH_ANALYZER_NAME
 	mget -q $THOTH_ANALYZER_OBJECT >$THOTH_ANALYZER
-
 else
 	unset THOTH_ANALYZER
 fi

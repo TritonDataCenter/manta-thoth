@@ -48,7 +48,8 @@ var thoth = {
 	logs: 'logs',
 	log: 'log',
 	verbose: true,
-	asset: 'thoth.tar.gz',
+	// FIXME
+	asset: '/thoth/public/thoth-sunos-1.3.0.tar.gz',
 	db: {
 		host: 'localhost',
 		port: 28015,
@@ -242,7 +243,7 @@ var jobby = function (httpres)
 var checkJobby = function (client, cb)
 {
 	client.info('/thoth/stor/thoth', function (err, info) {
-		thoth.jobby = (info.headers['server'] === 'Manta/1');
+		thoth.jobby = (info.headers['server'] === 'Manta');
 		cb(thoth.jobby);
 	});
 }
@@ -918,81 +919,25 @@ jobWait = function (client, jobid, cb)
 	check();
 };
 
-jobOutput = function (client, cb)
-{
-	var found = false;
-
-	var fetchOutput = function (job, key) {
-		client.get(key, function (err, stream, res) {
-			checkError(err);
-
-			var output = '';
-
-			stream.on('data', function (data) {
-				output += data;
-			});
-
-			stream.on('end', function () {
-				cb(output);
-			});
-		});
-	};
-
-	return (function (job) {
-		client.jobOutput(job.id, function (err, out) {
-			checkError(err);
-			out.on('key', function (k) {
-				found = true;
-				fetchOutput(job, k);
-			});
-			out.on('end', function () { if (!found) cb(); });
-		});
-	});
-}
-
-jobOneKey = function (client, key, cmd, cb, preflight)
-{
-	var job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
-
-	if (preflight)
-		preflight(job);
-
-	client.createJob(job, function (err, id) {
-		checkError(err);
-
-		status('adding key to job ' + id);
-
-		client.addJobKey(id, key, function (err) {
-			checkError(err);
-
-			client.endJob(id, function (err) {
-				checkError(err);
-				status('processing job ' + id);
-				jobWait(client, id, cb);
-			});
-		});
-	});
-};
-
-jobSetThoth = function (job)
+initThothJob = function (job)
 {
 	var phase = job.phases[0];
-	var asset = '/thoth/public/assets/' + thoth.asset;
+	var tarball_asset = thoth.asset;
 	var config = '.thoth.' + thoth.config;
 
 	if (!phase.assets)
 		phase.assets = [];
 
-	phase.assets.push(asset);
+	phase.assets.push(tarball_asset);
 
 	phase.init = 'echo \'{"db": ' + JSON.stringify(thoth.db) + '}\' > ' +
-	    '~/' + config + '; cd / ; tar xzf /assets/' + asset;
+	    '~/' + config + '; gtar -C / -xzf /assets/' + tarball_asset;
 }
 
 thothLoadCmd = function (what)
 {
-	return ('/opt/custom/thoth/node_modules/manta-thoth/bin/thoth ' +
-	    'load ' + what);
+	return ('/opt/custom/thoth/build/node/bin/node ' +
+	    '/opt/custom/thoth/bin/thoth load ' + what);
 }
 
 /*
@@ -1462,7 +1407,7 @@ var processCrash = function (client, stat, base, dump, cb)
 	cmd += thothLoadCmd(json);
 
 	job = { phases: [ { exec: cmd, type: 'storage-map' } ] };
-	jobSetThoth(job);
+	initThothJob(job);
 
 	status('creating job to process ' + mod_path.basename(base));
 
@@ -1492,12 +1437,27 @@ var uncompressCrash = function (client, stat, base, dump, cb)
 	cmd += 'mput -f $dir/vmcore* ' + vmcore;
 
 	status('creating job to savecore ' + mod_path.basename(base));
-	jobOneKey(client, dump, cmd,
-	    function () { processCrash(client, stat, base, vmcore, cb); },
-	    function (job) {
-		job.phases[0].disk = 256;
-		job.phases[0].memory = 8192;
-	    });
+
+	var job = { phases: [ {
+	    exec: cmd, type: 'storage-map', memory: 8192, disk: 256
+	} ] };
+
+	client.createJob(job, function (err, id) {
+		checkError(err);
+
+		client.addJobKey(id, dump, function (err) {
+			checkError(err);
+
+			client.endJob(id, function (err) {
+				checkError(err);
+				status('processing job ' + id);
+				jobWait(client, id, function () {
+					processCrash(client, stat,
+					    base, vmcore, cb);
+				});
+			});
+		});
+	});
 };
 
 /*
@@ -1891,7 +1851,6 @@ var localEnv = function(info, dump_path, analyzer, runAnalyzer)
 {
 	env = process.env;
 
-	// FIXME if job, change to thothLoadCmd
 	env['THOTH'] = thoth.reexec;
 	env['THOTH_SUPPORTS_JOBS'] = "false";
 	env['MANTA_INPUT_FILE'] = dump_path;
@@ -1929,7 +1888,7 @@ var mget = function(client, path, mpath, cb)
 			if (err) {
 				try {
 					mod_fs.unlinkSync(path);
-				} catch {
+				} catch (_) {
 				}
 
 				checkError(err);
@@ -2069,10 +2028,12 @@ var runDebugJob = function(client, info, analyzer)
 
 	var args = [ info.dump ];
 
+	/*
+	 * We still want to unpack the latest thoth, so we'll get how to do that
+	 * from initThothJob(), even though we're going mlogin in.
+	 */
 	var dummy = { phases: [ {} ] };
-
-	jobSetThoth(dummy);
-
+	initThothJob(dummy);
 	cmd += dummy.phases[0].init + '\n';
 
 	if (analyzer) {
@@ -2087,9 +2048,10 @@ var runDebugJob = function(client, info, analyzer)
 		cmd += 'LIBPROC_INCORE_ELF=1 mdb $MANTA_INPUT_FILE';
 	}
 
-	setAnalyzer(client, cmd, function (asset) {
+	setAnalyzer(client, cmd, analyzer, false, function (asset) {
 		args = args.concat([ '-s', asset,
 		    '-s', dummy.phases[0].assets[0],
+			// FIXME: should be cmd when thoth-init.sh'd
 		    '-c', '/assets/' + asset,
 		    '--memory=2048' ]);
 
@@ -2104,7 +2066,7 @@ var runDebugJob = function(client, info, analyzer)
 				process.exit(code);
 			});
 		});
-	}, { loadv8: analyzer ? false : true });
+	});
 }
 
 handlers.debug = function (client, argv)
@@ -2950,159 +2912,45 @@ handlers.unticket = function (client, argv)
 	return (handlers.unset(client, argv, true));
 }
 
-var setV8 = function (opts)
-{
-	var cmd = '';
-
-	cmd = 'if [[ `cat $THOTH_INFO | json cmd` == "node" ]]; then\n';
-	cmd += '	FILE_STR="$(file $THOTH_DUMP)"\n';
-	cmd += '	MDB_PROC=/usr/lib/mdb/proc\n';
-	cmd += '	MDB_V8=mdb_v8_ia32.so\n';
-	cmd += '	MDB_V8_DIR=/root/mdb\n';
-	cmd += '	MDB_V8_LATEST=/Joyent_Dev/public/mdb_v8/latest\n';
-	cmd += '	if [[ $FILE_STR == *"ELF 64-bit"* ]]; then\n';
-	cmd += '		MDB_PROC=/usr/lib/mdb/proc/amd64\n';
-	cmd += '		MDB_V8=mdb_v8_amd64.so\n';
-	cmd += '		MDB_V8_DIR=/root/mdb/amd64\n';
-	cmd += '	fi\n';
-	cmd += '\n';
-	cmd += '	if [[ ! -d $MDB_V8_DIR ]]; then\n';
-	cmd += '		mkdir -p $MDB_V8_DIR\n';
-	cmd += '	fi\n';
-	cmd += '\n';
-	cmd += '	if [[ ! -f $MDB_V8_DIR/v8.so ]]; then\n';
-	cmd += '		MDB_V8_LATEST=`mget -q ' +
-	    thoth.v8 + '`\n';
-	cmd += '		mget -q $MDB_V8_LATEST/$MDB_V8 ' +
-	    '> $MDB_V8_DIR/v8.so\n';
-	cmd += '	fi\n';
-	cmd += '\n';
-	cmd += '	if [[ ! -f ~/.mdbrc ]]; then\n';
-	cmd += '		echo "::set -L $MDB_V8_DIR:$MDB_PROC" ' +
-	    '> ~/.mdbrc\n';
-
-	if (opts && opts.loadv8)
-		cmd += '		echo "::load v8.so" >> ~/.mdbrc\n';
-
-	cmd += '	fi\n';
-	cmd += 'fi\n';
-
-	return (cmd);
-};
-
 /*
- * This is only for job context: see ../lib/thoth-init.sh for a local run.
+ * Set up analyzer running in a Manta job.
  */
-var setAnalyzer = function (client, exec, cb, opts)
+var setAnalyzer = function (client, extracmd, analyzer, execAnalyzer, cb)
 {
 	var cmd = '';
 
 	if (thoth.analyzerdebug)
 		cmd += 'set -o xtrace\n';
 
-	// FIXME: merge with thothenv
-
-	cmd += 'thoth_fatal()\n';
-	cmd += '{\n';
-	cmd += '	echo thoth: "$*" 1>&2\n';
-	cmd += '	exit 1\n';
-	cmd += '}\n\n';
-
-	cmd += 'thoth_onexit()\n';
-	cmd += '{\n';
-	cmd += '	[[ $1 -ne 0 ]] || exit 0\n';
-	cmd += '	thoth_fatal "error exit status $1"\n';
-	cmd += '}\n\n';
-
-	cmd += 'thoth_set()\n';
-	cmd += '{\n';
-	cmd += '	local prop=$1\n';
-	cmd += '	local propfile=/tmp/thoth.prop\n';
-	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
-	cmd += '		thoth_fatal "failed to specify property"\n';
-	cmd += '	fi\n\n';
-	cmd += '	if [[ "$#" -eq 2 ]]; then\n';
-	cmd += '		local propval="$2"\n';
-	cmd += '	else\n';
-	cmd += '		local propval=`cat | ';
-	cmd += ' sed \'s/\\\\\\\\/\\\\\\\\\\\\\\\\/g\'';
-	cmd += ' | ';
-	cmd += ' sed \'s/"/\\\\\\\\"/g\' | ';
-	cmd += ' sed \':a;N;$!ba;s/\\\\n/\\\\\\\\n/g\'`\n';
-	cmd += '	fi\n\n';
-
-	cmd += '	echo "{ \\"properties\\": { \\"$prop\\": ';
-	cmd += '\\"$propval\\" } }" > $propfile\n';
-	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
-	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
-	cmd += ' > $propout\n';
-	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + '\n';
-	cmd += '}\n\n';
-
-	cmd += 'thoth_unset()\n';
-	cmd += '{\n';
-	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
-	cmd += '		thoth_fatal "failed to specify property"\n';
-	cmd += '	fi\n\n';
-	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
-	cmd += '	cat $THOTH_INFO | json -e ';
-	cmd += '"this.properties.$1=undefined" > $propout\n';
-	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + '\n';
-	cmd += '}\n\n';
-
-	cmd += 'thoth_ticket()\n';
-	cmd += '{\n';
-	cmd += '	local propfile=/tmp/thoth.prop\n';
-	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	if [[ "$#" -lt 1 ]]; then\n';
-	cmd += '		thoth_fatal "failed to specify ticket"\n';
-	cmd += '	fi\n\n';
-	cmd += '	echo "{ \\"ticket\\": \\"$1\\" }" > $propfile\n';
-	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
-	cmd += '	cat $THOTH_INFO $propfile | json --deep-merge ';
-	cmd += ' > $propout\n';
-	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + '\n';
-	cmd += '}\n\n';
-
-	cmd += 'thoth_unticket()\n';
-	cmd += '{\n';
-	cmd += '	local propout=/tmp/thoth.out\n';
-	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO\n';
-	cmd += '	cat $THOTH_INFO | json -e "this.ticket=undefined"';
-	cmd += ' > $propout\n';
-	cmd += '	mput -f $propout $THOTH_INFO_OBJECT\n';
-	cmd += '	' + thothLoadCmd('$propout') + '\n';
-	cmd += '}\n\n';
-
 	var asset = thoth.analyzers + '/.thoth.' + process.pid + '.' +
 	    (new Date().valueOf() / 1000);
 
-	cmd += 'if [[ -z "$THOTH_DUMP" ]]; then\n';
-	cmd += '	export DTRACE_DOF_INIT_DISABLE=1\n';
-	cmd += '	export THOTH_DUMP=$MANTA_INPUT_FILE\n';
-	cmd += '	THOTH_NAME=`basename $(dirname $MANTA_INPUT_FILE)`\n';
-	cmd += '	export THOTH_NAME\n';
-	cmd += '	export THOTH_INFO=/var/tmp/info.json\n';
-	cmd += '	THOTH_DIR=`dirname $MANTA_INPUT_OBJECT`\n';
-	cmd += '	export THOTH_INFO_OBJECT=${THOTH_DIR}/info.json\n'
-	cmd += '	mget $THOTH_INFO_OBJECT > $THOTH_INFO 2> /dev/null\n\n';
-	cmd += '	export THOTH_TYPE=`cat $THOTH_INFO | json type`\n';
-	cmd += '	export THOTH_ASSET_OBJECT=' + asset + '\n';
-	cmd += '	export THOTH_ASSET=/assets/' + asset + '\n';
-	cmd += '	echo "source $THOTH_ASSET" > ~/.bashrc\n';
-	cmd += '	echo "PS1=\\\"${MANTA_USER}@thoth # \\\"" >> ' +
-			    '~/.bashrc\n';
-	cmd += '	export THOTH_UNINDEXED_OBJECT=${THOTH_DIR}' +
-			    thoth.unindexed + '\n\n';
-	cmd += setV8(opts);
+	cmd += 'export THOTH_ASSET_OBJECT=' + asset + '\n';
+	cmd += 'export THOTH_ASSET=/assets/' + asset + '\n';
+	cmd += 'echo "source $THOTH_ASSET" > ~/.bashrc\n';
 
-	cmd += '	' + exec + '\n';
-	cmd += 'fi\n';
+	cmd += 'export THOTH="/opt/custom/thoth/build/node/bin/node ' +
+	    '/opt/custom/thoth/bin/thoth"\n';
+	cmd += 'export THOTH_SUPPORTS_JOBS=true\n';
+	cmd += 'export THOTH_RUN_ANALYZER=true\n'
+
+/* FIXME later
+	if (analyzer === undefined)
+		return (env);
+*/
+
+	if (analyzerIsDcmd(analyzer)) {
+		cmd += 'export THOTH_ANALYZER_DCMD=' + analyzer + '\n';
+	} else {
+		cmd += 'export THOTH_ANALYZER_NAME=' + analyzer + '\n';
+		cmd += 'export THOTH_ANALYZER_OBJECT=' +
+		    mod_path.join(thoth.analyzers, analyzer) + '\n';
+	}
+
+	cmd += mod_fs.readFileSync(mod_path.join(__dirname,
+	    '../lib/thoth-init.sh'));
+
+	cmd += '\n' + extracmd + '\n';
 
 	var analyzer = new ReadableStringStream(cmd);
 
@@ -3112,52 +2960,152 @@ var setAnalyzer = function (client, exec, cb, opts)
 	});
 }
 
-var runAnalyzerJobs = function (client, keys, analyzer)
+var streamToStr = function (err, stream, cb)
 {
-	var cmd;
-	var dcmd = false;
+	checkError(err);
 
-	if (analyzerIsDcmd(analyzer)) {
-		status('executing mdb dcmd "' + analyzer + '"');
-		cmd = 'echo $THOTH_NAME: `echo \'' + analyzer +
-		    '\' | mdb $THOTH_DUMP 2> /dev/null`';
-		dcmd = true;
-	} else {
-		if (analyzer.indexOf('/') != 0)
-			analyzer = thoth.analyzers + '/' + analyzer;
+	var str = '';
 
-		cmd = 'cat $THOTH_ASSET /assets/' + analyzer + ' | bash\n';
-	}
+	stream.on('data', function (data) {
+		str += data;
+	});
 
-	setAnalyzer(client, cmd, function (asset) {
-		var preflight = function (job) {
-			job.phases[0].assets = [ asset ];
-
-			if (!dcmd)
-				job.phases[0].assets.push(analyzer);
-
-			job.phases.push({ exec: 'cat', type: 'reduce' });
-			jobSetThoth(job);
-		};
-
-		var done = function (output) {
-			console.log(output);
-			client.unlink(asset, function (err) {
-				checkError(err);
-				process.exit(0);
-			});
-		}
-
-		jobOneKey(client, keys, 'bash < /assets/' + asset,
-		    jobOutput(client, done), preflight);
+	stream.on('end', function () {
+		cb(str);
 	});
 }
+
+var jobOutputs = function(client, id, cb)
+{
+	client.jobOutput(id, function (err, out) {
+		checkError(err);
+
+		var keys = [];
+
+		out.on('key', function (key) {
+			keys.push(key);
+		});
+
+		out.on('end', function () {
+			var stdout = '';
+
+			mod_vasync.forEachPipeline({
+			    func: function (key, cb) {
+				client.get(key, function (err, stream) {
+					streamToStr(err, stream,
+					    function (str) {
+						stdout += str;
+						cb();
+					});
+				});
+			    },
+			    inputs: keys
+		        }, function (err) {
+				checkError(err);
+				cb(stdout);
+			});
+		});
+	});
+}
+
+var jobErrors = function(client, id, cb)
+{
+	client.jobErrors(id, function (err, out) {
+		checkError(err);
+
+		var keys = [];
+
+		out.on('err', function (err) {
+			keys.push(err.stderr);
+		});
+
+
+		out.on('end', function () {
+			var stderr = '';
+
+			mod_vasync.forEachPipeline({
+			    func: function (key, cb) {
+				client.get(key, function (err, stream) {
+					streamToStr(err, stream,
+					    function (str) {
+						stderr += str;
+						cb();
+					});
+				});
+			    },
+			    inputs: keys
+		        }, function (err) {
+				checkError(err);
+				cb(stderr);
+			});
+		});
+	});
+}
+
+var endJob = function(client, id, cb)
+{
+	client.endJob(id, function (err) {
+		checkError(err);
+
+		status('processing job ' + id);
+
+		jobWait(client, id, function () {
+			jobErrors(client, id, function (stderr) {
+				jobOutputs(client, id, function (stdout) {
+					cb(stdout, stderr);
+				});
+			});
+		});
+	});
+}
+
+var runAnalyzerJobs = function (client, keys, analyzer)
+{
+	var cmd = '';
+	var dcmd = false;
+
+	setAnalyzer(client, cmd, analyzer, true, function (asset) {
+
+		var job = { phases: [] };
+
+		job.phases[0] = { exec: 'bash < /assets/' + asset,
+		    type: 'storage-map', assets: [ asset ] };
+		job.phases[1] = { exec: 'cat', type: 'reduce' };
+
+		initThothJob(job);
+
+		var done = function (stdout, stderr) {
+			if (stderr) {
+				console.log('job errors:\n' + stderr);
+				process.exit(1);
+			}
+
+			console.log(stdout);
+			process.exit(0);
+		};
+
+		client.createJob(job, function (err, id) {
+			checkError(err);
+
+			client.addJobKey(id, keys, function (err) {
+				checkError(err);
+
+				endJob(client, id, function (stdout, stderr) {
+					client.unlink(asset, function (err) {
+						checkError(err);
+						done(stdout, stderr);
+					});
+				});
+			});
+		});
+	});
+};
 
 var runAnalyzer = function (client, dumps, analyzer)
 {
 	checkJobby(client, function (isJobby) {
 		if (isJobby) {
-			runAnalyzerJobs(client, keys, analyzer);
+			runAnalyzerJobs(client, dumps, analyzer);
 			return;
 		}
 
