@@ -2871,14 +2871,11 @@ var buildInit = function (client, cmd, analyzer, execAnalyzer, cb)
 	if (thoth.analyzerdebug)
 		cmd += 'set -o xtrace\n';
 
-	// FIXME: OK location???
 	var asset = thoth.analyzers + '/.thoth.' + process.pid + '.' +
 	    (new Date().valueOf() / 1000);
 
 	cmd += 'export THOTH_ASSET_OBJECT=' + asset + '\n';
 	cmd += 'export THOTH_ASSET=/assets/' + asset + '\n';
-	// FIXME: needed?
-	cmd += 'echo "source $THOTH_ASSET" > ~/.bashrc\n';
 
 	cmd += 'export THOTH="/opt/custom/thoth/build/node/bin/node ' +
 	    '/opt/custom/thoth/bin/thoth"\n';
@@ -3021,11 +3018,14 @@ var runAnalyzerJobs = function (client, keys, analyzer)
 
 		var done = function (stdout, stderr) {
 			if (stderr) {
-				console.log('job errors:\n' + stderr);
+				console.error('job errors:\n' + stderr);
 				process.exit(1);
 			}
 
-			console.log(stdout);
+			if (stdout) {
+				console.log('job output:\n' + stdout);
+			}
+
 			process.exit(0);
 		};
 
@@ -3657,6 +3657,8 @@ handlers.logs = function (client, argv)
 		res.on('end', doneMachines);
 	});
 }
+
+// FIXME: install at least process-dump analyzer
 
 handlers.init = function ()
 {
