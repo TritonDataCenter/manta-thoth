@@ -1983,77 +1983,27 @@ var runDebugLocal = function(client, info, analyzer, execAnalyzer, cb)
 
 var runDebugJob = function(client, info, analyzer)
 {
-	var analyzerCmd = function (args) {
-		var cmd = 'export THOTH_ANALYZER=/var/tmp/' + analyzer + '\n';
-		var path = [ thoth.analyzers, analyzer ].join('/');
-		var analyze = 'cat \\$THOTH_ASSET \\$THOTH_ANALYZER | bash';
-
-		args = args.concat([ '-s', path ]);
-
-		cmd += 'orig=/var/tmp/' + analyzer + '.orig\n';
-		cmd += 'mget ' + path + ' > $THOTH_ANALYZER 2> /dev/null\n';
-		cmd += 'if [[ $? -ne 0 ]]; then\n';
-		cmd += '	echo "thoth: ' + analyzer + ' not found"\n';
-		cmd += '	exit 1\n';
-		cmd += 'fi\n';
-		cmd += 'cp $THOTH_ANALYZER $orig\n';
-		cmd += 'chmod +x $THOTH_ANALYZER\n';
-
-		cmd += 'echo "thoth: analyzer \\"' + analyzer + '\\" is in ' +
-		    '\\$THOTH_ANALYZER"\n';
-		cmd += 'echo "thoth: run \\\"thoth_analyze\\\" to run ' +
-		    '\\$THOTH_ANALYZER"\n';
-		cmd += 'echo "thoth: any changes to \\$THOTH_ANALYZER will ' +
-		    'be stored upon successful exit"\n';
-		cmd += 'echo "alias thoth_analyze=\\\"' + analyze +
-		    '\\\"" >> ~/.bashrc\n';
-		cmd += 'if ! bash -i; then\n';
-		cmd += '	exit $?\n';
-		cmd += 'fi\n';
-		cmd += 'if cmp $THOTH_ANALYZER $orig > /dev/null 2>&1; then\n';
-		cmd += '	exit 0\n';
-		cmd += 'fi\n';
-		cmd += 'echo "thoth: storing changes to \\$THOTH_ANALYZER"\n';
-		cmd += 'mput -f $THOTH_ANALYZER ' + path + ' 2> /dev/null\n';
-		cmd += 'echo "thoth: done"\n';
-
-		return (cmd);
-	};
+	var mlogin = mod_path.dirname(require.resolve('manta')) +
+	    '/../bin/mlogin';
 
 	status('debugging ' + mod_path.basename(mod_path.dirname(info.dump)));
 
-
-	var info = info.name + '/info.json';
-	var cmd = 'echo "thoth: dump info is in \\$THOTH_INFO"\n';
-
-	var args = [ info.dump ];
-
 	/*
-	 * We still want to unpack the latest thoth, so we'll get how to do that
-	 * from initThothJob(), even though we're going mlogin in.
+	 * We still want to unpack the thoth tarball, so we'll get how to do
+	 * that from initThothJob(), even though we're going mlogin in.
 	 */
+
 	var dummy = { phases: [ {} ] };
+
 	initThothJob(dummy);
-	cmd += dummy.phases[0].init + '\n';
 
-	if (analyzer) {
-		cmd += analyzerCmd(args);
-	} else {
-		/*
-		 * LIBPROC_INCORE_ELF=1 prevents us from loading
-		 * whatever node binary happens to be in $PATH. This is
-		 * necessary when debugging cores that do not match the
-		 * bitness of the node binary found in $PATH.
-		 */
-		cmd += 'LIBPROC_INCORE_ELF=1 mdb $MANTA_INPUT_FILE';
-	}
+	var tarball_asset = dummy.phases[0].assets[0];
+	var cmd = dummy.phases[0].init + '\n';
 
-	setAnalyzer(client, cmd, analyzer, false, function (asset) {
-		args = args.concat([ '-s', asset,
-		    '-s', dummy.phases[0].assets[0],
-			// FIXME: should be cmd when thoth-init.sh'd
-		    '-c', '/assets/' + asset,
-		    '--memory=2048' ]);
+	buildInit(client, cmd, analyzer, false, function (asset) {
+		args = [ '-s', asset, '-s', tarball_asset,
+		   '-c', '/bin/bash --init-file /assets/' + asset + ' -i',
+		    '--memory=2048', info.dump ];
 
 		var child = mod_child.spawn(mlogin, args,
 		    { stdio: 'inherit' });
@@ -2913,44 +2863,42 @@ handlers.unticket = function (client, argv)
 }
 
 /*
- * Set up analyzer running in a Manta job.
+ * Set up initialization for running inside a Manta job, either an analyzer, or
+ * for an interactive debug session.
  */
-var setAnalyzer = function (client, extracmd, analyzer, execAnalyzer, cb)
+var buildInit = function (client, cmd, analyzer, execAnalyzer, cb)
 {
-	var cmd = '';
-
 	if (thoth.analyzerdebug)
 		cmd += 'set -o xtrace\n';
 
+	// FIXME: OK location???
 	var asset = thoth.analyzers + '/.thoth.' + process.pid + '.' +
 	    (new Date().valueOf() / 1000);
 
 	cmd += 'export THOTH_ASSET_OBJECT=' + asset + '\n';
 	cmd += 'export THOTH_ASSET=/assets/' + asset + '\n';
+	// FIXME: needed?
 	cmd += 'echo "source $THOTH_ASSET" > ~/.bashrc\n';
 
 	cmd += 'export THOTH="/opt/custom/thoth/build/node/bin/node ' +
 	    '/opt/custom/thoth/bin/thoth"\n';
 	cmd += 'export THOTH_SUPPORTS_JOBS=true\n';
-	cmd += 'export THOTH_RUN_ANALYZER=true\n'
 
-/* FIXME later
-	if (analyzer === undefined)
-		return (env);
-*/
+	cmd += 'export THOTH_RUN_ANALYZER=' + (execAnalyzer ?
+	    "true" : "false") + '\n';
 
-	if (analyzerIsDcmd(analyzer)) {
-		cmd += 'export THOTH_ANALYZER_DCMD=' + analyzer + '\n';
-	} else {
-		cmd += 'export THOTH_ANALYZER_NAME=' + analyzer + '\n';
-		cmd += 'export THOTH_ANALYZER_OBJECT=' +
-		    mod_path.join(thoth.analyzers, analyzer) + '\n';
+	if (analyzer) {
+		if (analyzerIsDcmd(analyzer)) {
+			cmd += 'export THOTH_ANALYZER_DCMD=' + analyzer + '\n';
+		} else {
+			cmd += 'export THOTH_ANALYZER_NAME=' + analyzer + '\n';
+			cmd += 'export THOTH_ANALYZER_OBJECT=' +
+			    mod_path.join(thoth.analyzers, analyzer) + '\n';
+		}
 	}
 
 	cmd += mod_fs.readFileSync(mod_path.join(__dirname,
 	    '../lib/thoth-init.sh'));
-
-	cmd += '\n' + extracmd + '\n';
 
 	var analyzer = new ReadableStringStream(cmd);
 
@@ -3061,10 +3009,7 @@ var endJob = function(client, id, cb)
 
 var runAnalyzerJobs = function (client, keys, analyzer)
 {
-	var cmd = '';
-	var dcmd = false;
-
-	setAnalyzer(client, cmd, analyzer, true, function (asset) {
+	buildInit(client, '', analyzer, true, function (asset) {
 
 		var job = { phases: [] };
 

@@ -143,7 +143,7 @@ fi
 
 export THOTH_TYPE=$(cat $THOTH_INFO | json type)
 
-export PS1="$THOTH_NAME@thoth $ "
+export PS1="thoth@$THOTH_NAME $ "
 export DTRACE_DOF_INIT_DISABLE=1
 
 # FIXME
