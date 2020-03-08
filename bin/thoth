@@ -1897,8 +1897,6 @@ var localEnv = function(info, dump_path, analyzer, runAnalyzer)
 	env['MANTA_INPUT_FILE'] = dump_path;
 	env['MANTA_INPUT_OBJECT'] = info.dump;
 	env['THOTH_RUN_ANALYZER'] = (runAnalyzer ? 'true' : 'false');
-	env['THOTH_INITFILE'] = mod_path.join(__dirname,
-	    '../lib/thoth-init.sh');
 
 	if (analyzer === undefined)
 		return (env);
@@ -1985,7 +1983,8 @@ var runDebugLocal = function(client, info, analyzer, execAnalyzer, cb)
 			var env = localEnv(info, dump_path, analyzer,
 			    execAnalyzer);
 
-			var initfile = env['THOTH_INITFILE'];
+			var initfile = mod_path.join(__dirname,
+			    '../lib/thoth-init.sh');
 
 			var args = [];
 			var stdio = [ 'ignore', 'inherit', 'inherit' ];
