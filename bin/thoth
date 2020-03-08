@@ -1969,7 +1969,7 @@ var downloadDump = function(client, info, cb)
  * As we now need to pull the input file locally, we'll store that in
  * /var/tmp/thoth/cache for future re-use (and warn the user that we did so).
  */
-var localJob = function(client, info, analyzer, execAnalyzer, cb)
+var runDebugLocal = function(client, info, analyzer, execAnalyzer, cb)
 {
 	downloadDump(client, info, function (err, dump_path) {
 		checkError(err);
@@ -2023,7 +2023,7 @@ var localJob = function(client, info, analyzer, execAnalyzer, cb)
 	});
 }
 
-var debugJob = function(client, info, analyzer)
+var runDebugJob = function(client, info, analyzer)
 {
 	var analyzerCmd = function (args) {
 		var cmd = 'export THOTH_ANALYZER=/var/tmp/' + analyzer + '\n';
@@ -2120,9 +2120,9 @@ handlers.debug = function (client, argv)
 	var doDebug = function (info) {
 		checkJobby(client, function (isJobby) {
 			if (isJobby) {
-				debugJob(client, info, analyzer);
+				runDebugJob(client, info, analyzer);
 			} else {
-				localJob(client, info, analyzer, false,
+				runDebugLocal(client, info, analyzer, false,
 				    function (err) {
 					checkError(err);
 					process.exit(0);
@@ -3169,7 +3169,8 @@ var runAnalyzer = function (client, dumps, analyzer)
 		vasync_extra.forEachParallelBatched({
 		    func: function (id, next) {
 			infoGet(client, id, function (info) {
-				localJob(client, info, analyzer, true, next);
+				runDebugLocal(client, info, analyzer,
+				    true, next);
 			});
 		    },
 		    inputs: ids,
