@@ -2025,8 +2025,11 @@ handlers.debug = function (client, argv)
 	    '/../bin/mlogin';
 	var analyzer = undefined;
 
-	if (argv.length > 1 && argv[argv.length - 1].indexOf('=') == -1)
+	if (argv.length > 1 && argv[argv.length - 1].indexOf('=') == -1) {
 		analyzer = argv.pop();
+		if (analyzerIsDcmd(analyzer))
+			fatal('dcmd analyzers cannot be debugged');
+	}
 
 	var doDebug = function (info) {
 		checkJobby(client, function (isJobby) {
@@ -2905,10 +2908,8 @@ var buildInit = function (client, cmd, analyzer, execAnalyzer, cb)
 	});
 }
 
-var streamToStr = function (err, stream, cb)
+var streamToStr = function (stream, cb)
 {
-	checkError(err);
-
 	var str = '';
 
 	stream.on('data', function (data) {
@@ -2937,8 +2938,8 @@ var jobOutputs = function(client, id, cb)
 			mod_vasync.forEachPipeline({
 			    func: function (key, cb) {
 				client.get(key, function (err, stream) {
-					streamToStr(err, stream,
-					    function (str) {
+					checkError(err);
+					streamToStr(stream, function (str) {
 						stdout += str;
 						cb();
 					});
@@ -2958,10 +2959,10 @@ var jobErrors = function(client, id, cb)
 	client.jobErrors(id, function (err, out) {
 		checkError(err);
 
-		var keys = [];
+		var errobjs = [];
 
 		out.on('err', function (err) {
-			keys.push(err.stderr);
+			errobjs.push(err);
 		});
 
 
@@ -2969,16 +2970,19 @@ var jobErrors = function(client, id, cb)
 			var stderr = '';
 
 			mod_vasync.forEachPipeline({
-			    func: function (key, cb) {
-				client.get(key, function (err, stream) {
-					streamToStr(err, stream,
-					    function (str) {
+			    func: function (eo, cb) {
+				client.get(eo.stderr, function (err, stream) {
+					checkError(err);
+					streamToStr(stream, function (str) {
+						if (str === '') {
+							str = eo.message;
+						}
 						stderr += str;
 						cb();
 					});
 				});
 			    },
-			    inputs: keys
+			    inputs: errobjs
 		        }, function (err) {
 				checkError(err);
 				cb(stderr);

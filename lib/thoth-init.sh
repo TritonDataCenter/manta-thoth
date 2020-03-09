@@ -6,6 +6,12 @@
 # as a bash "initfile", or in the context of a Manta job.
 #
 
+#
+# If we were run non-interactively, $BASH_ENV points here: make sure a new bash
+# shell doesn't run us again.
+#
+unset BASH_ENV
+
 thoth_fatal()
 {
 	echo thoth: "$*" 1>&2
@@ -146,32 +152,38 @@ export THOTH_TYPE=$(cat $THOTH_INFO | json type)
 export PS1="thoth@$THOTH_NAME $ "
 export DTRACE_DOF_INIT_DISABLE=1
 
-# FIXME
-#if [[ $(cat $THOTH_INFO | json cmd) == "node" ]]; then
-#	FILE_STR="$(file $THOTH_DUMP)"
-#	MDB_PROC=/usr/lib/mdb/proc
-#	MDB_V8=mdb_v8_ia32.so
-#	MDB_V8_DIR=/root/mdb
-#	MDB_V8_LATEST=/Joyent_Dev/public/mdb_v8/latest
-#	if [[ $FILE_STR == *"ELF 64-bit"* ]]; then
-#		MDB_PROC=/usr/lib/mdb/proc/amd64
-#		MDB_V8=mdb_v8_amd64.so
-#		MDB_V8_DIR=/root/mdb/amd64
-#	fi
-#
-#	if [[ ! -d $MDB_V8_DIR ]]; then
-#		mkdir -p $MDB_V8_DIR
-#	fi
-#
-#	if [[ ! -f $MDB_V8_DIR/v8.so ]]; then
-#		MDB_V8_LATEST=`mget -q /Joyent_Dev/public/mdb_v8/latest`
-#		mget -q $MDB_V8_LATEST/$MDB_V8 > $MDB_V8_DIR/v8.so
-#	fi
-#
-#	if [[ ! -f ~/.mdbrc ]]; then
-#		echo "::set -L $MDB_V8_DIR:$MDB_PROC" > ~/.mdbrc
-#		echo "::load v8.so" >> ~/.mdbrc
-#	fi
+if [[ $(cat $THOTH_INFO | json cmd) == "node" ]]; then
+	FILE_STR="$(file $THOTH_DUMP)"
+	MDB_V8=mdb_v8_ia32.so
+	export MDB_V8_DIR=$THOTH_TMPDIR/mdb
+
+	function jmget() {
+		curl -sk https://us-east.manta.joyent.com/$1
+	}
+
+	if [[ $FILE_STR == *"ELF 64-bit"* ]]; then
+		MDB_V8=mdb_v8_amd64.so
+		MDB_V8_DIR=$THOTH_TMPDIR/mdb/amd64
+	fi
+
+	if [[ ! -d $MDB_V8_DIR ]]; then
+		mkdir -p $MDB_V8_DIR
+	fi
+
+	if [[ ! -f $MDB_V8_DIR/v8.so ]]; then
+		MDB_V8_LATEST=$(jmget /Joyent_Dev/public/mdb_v8/latest)
+		jmget $MDB_V8_LATEST/$MDB_V8 >$MDB_V8_DIR/v8.so
+	fi
+
+	# a rather hacky way to auto-load v8, but it works
+	function mdb() {
+		MDBRC=$THOTH_TMPDIR/.mdbrc
+		cat ~/.mdbrc >$MDBRC 2>/dev/null || true
+		echo "::set -L \"$MDB_V8_DIR\"" >>$MDBRC
+		echo "::load v8" >>$MDBRC
+		HOME=$THOTH_TMPDIR /usr/bin/mdb "$@"
+	}
+fi
 
 if [[ -n "$THOTH_ANALYZER_OBJECT" ]]; then
 	export THOTH_ANALYZER=$THOTH_TMPDIR/$THOTH_ANALYZER_NAME
@@ -193,7 +205,7 @@ if [[ "$THOTH_RUN_ANALYZER" = "true" ]]; then
 		 #
 		export LIBPROC_INCORE_ELF=1
 
-		exec mdb -e "$THOTH_ANALYZER_DCMD" "$THOTH_DUMP"
+		mdb -e "$THOTH_ANALYZER_DCMD" "$THOTH_DUMP"
 	else
 		thoth_analyze
 	fi
@@ -220,8 +232,6 @@ if [[ -n "$THOTH_ANALYZER" ]]; then
 			echo "thoth: done"
 		fi
 	fi
-
-	exit $?
 else
 	 #
 	 # LIBPROC_INCORE_ELF=1 prevents us from loading whatever node binary
@@ -230,5 +240,7 @@ else
 	 #
 	export LIBPROC_INCORE_ELF=1
 
-	exec mdb "$THOTH_DUMP"
+	mdb "$THOTH_DUMP"
 fi
+
+exit $?
