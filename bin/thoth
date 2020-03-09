@@ -236,7 +236,7 @@ var jobby = function (httpres)
 
 	mod_assert.ok(httpres);
 
-	thoth.jobby = (httpres.headers['server'] === 'Manta/1');
+	thoth.jobby = (httpres.headers['server'] === 'Manta');
 	return (thoth.jobby);
 }
 
