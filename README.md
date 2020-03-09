@@ -1,13 +1,10 @@
 manta-thoth
 ===========
-FIXME: update for jobless
 
 Thoth is a Manta-based system for core and crash dump management for
 illumos-derived systems like SmartOS, OmniOS, DelphixOS, Nexenta, etc. --
 though in principle it can operate on any system that generates ELF
-core files.  With Thoth, dumps can be moved exactly once -- into Manta --
-and then be debugged, analyzed, archived and reported upon without
-further data movement.
+core files.
 
 # Installation
 
@@ -96,7 +93,11 @@ Thoth consists primarily of the `thoth` utility, a veneer on Manta that
 generates a _hash_ unique to a core or crash dump, uploads that dump to a
 directory under `$MANTA_USER/stor/thoth`, loads the metadata associated
 with the dump into a RethinkDB-based querying database, and offers facilities
-to list, filter and (most importantly) debug those dumps in place.
+to list, filter and (most importantly) debug those dumps.
+
+If used with a Manta v1 installation, `thoth` uses Manta jobs. With Manta v2,
+jobs are not supported. In this case, things such as `thoth debug` run on the
+local machine.
 
 ### Dump specifications
 
@@ -199,7 +200,7 @@ be read from standard input, e.g.:
 ## Subcommands
 
 `thoth` operates by specifying a subcommand.  Many subcommands kick
-off Manta jobs, and the job ID is presented in the command line
+off Manta jobs when using v1, and the job ID is presented in the command line
 (allowing Manta tools like [`mjob`](https://github.com/joyent/node-manta/blob/master/docs/man/mjob.md) to be used to observe or debug behavior).
 In general, success is denoted by an exit status 0 and failure by an
 exit status of 1 -- but some subcommands can exit with other status
@@ -225,6 +226,10 @@ postprocess it:
     thoth: processing 3e166b93871e7747c799008f58bd30b9
     thoth: waiting for completion of job da3c0bf5-b04f-445b-aee7-af43ea3d17c0
     thoth: job da3c0bf5-b04f-445b-aee7-af43ea3d17c0 completed in 0h0m2s
+
+If using Manta v2, a kernel crash dump is not uncompressed after uploading (and
+only minimal information is collected in `thoth info` for the dump). The
+analyzer `process-dump` can be used to do this post-upload.
 
 ### info
 
@@ -293,8 +298,11 @@ an exit status of 2 denotes that the dump was not found.
 
 ### debug
 
-Results in an interactive debugging session debugging the specified dump
-via [mlogin](http://blog.sysmgr.org/2013/06/manta-mlogin.html).
+Results in an interactive debugging session debugging the specified dump.
+
+If using Manta v2, the dump is downloaded locally into `/var/tmp/thoth/cache`.
+It is not deleted, so running again will be much quicker; a simple `rm` is
+sufficient to clean up any unwanted local dumps.
 
 ### ls
 
@@ -368,17 +376,16 @@ Unsets a ticket on a dump.
 ### analyze
 
 On the specified dumps, runs the specified analyzer, as uploaded via the
-`analyzer` subcommand.  An analyzer is a shell script that runs in the
-context of a Manta job on a dump.  The following shell variables are made
-available in the context of an analyzer:
+`analyzer` subcommand.  An analyzer is a shell script that runs against a given
+dump.  The following shell variables are made available in the context of an
+analyzer:
 
 * `$THOTH_DUMP`: The path of the dump.  (This is set to the same
   value as `$MANTA_INPUT_FILE`.)
 
 * `$THOTH_INFO`: The path of a local file that contains the JSON
-  info for the dump.  The [json](https://github.com/trentm/json) utility
-  exists in the context of a Manta job, and this may be used to parse this
-  file.
+  info for the dump. The [json](https://github.com/trentm/json) utility
+  may be used to parse this file.
 
 * `$THOTH_TYPE`: The type of the dump (either `crash` or `core`).
 
