@@ -3095,6 +3095,16 @@ handlers.analyze = function (client, argv)
 	});
 };
 
+var uploadAnalyzer = function (client, name, stream, cb) {
+	client.mkdirp(thoth.analyzers, function (err) {
+                checkError(err);
+
+		var mpath = mod_path.join(thoth.analyzers, name);
+
+		client.put(mpath, stream, cb);
+	});
+};
+
 handlers.analyzer = function (client, argv)
 {
 	var remove = true;
@@ -3106,10 +3116,7 @@ handlers.analyzer = function (client, argv)
 	if (analyzerIsDcmd(argv[0]))
 		fatal('analyzer name may not contain mdb verbs or commands');
 
-	analyzer = thoth.analyzers + '/' + argv[0];
-	msg = 'analyzer \'' + argv[0] + '\'';
-
-	warn('reading ' + msg + ' from stdin');
+	warn('reading analyzer "' + argv[0] + '" from stdin');
 
 	/*
 	 * We want to be sure to pause stdin after adding the 'data' listener
@@ -3118,24 +3125,20 @@ handlers.analyzer = function (client, argv)
 	process.stdin.on('data', function () { remove = false; });
 	process.stdin.pause();
 
-	client.mkdirp(thoth.analyzers, function (err) {
+	uploadAnalyzer(client, argv[0], process.stdin, function (err) {
 		checkError(err);
 
-		client.put(analyzer, process.stdin, function (err) {
-			checkError(err);
-
-			if (remove) {
-				warn('removing ' + msg);
-				client.unlink(analyzer, function (err) {
-					checkError(err);
-					warn('removed ' + msg);
-					process.exit(0);
-				});
-			} else {
-				warn('added ' + msg);
+		if (remove) {
+			warn('removing ' + msg);
+			client.unlink(analyzer, function (err) {
+				checkError(err);
+				warn('removed ' + msg);
 				process.exit(0);
-			}
-		});
+			});
+		} else {
+			warn('added ' + argv[0]);
+			process.exit(0);
+		}
 	});
 }
 
@@ -3658,7 +3661,30 @@ handlers.logs = function (client, argv)
 	});
 }
 
-// FIXME: install at least process-dump analyzer
+/*
+ * Some batteries included.
+ */
+var uploadAnalyzers = function (cb) {
+	client = connect();
+
+	var dir = mod_path.join(__dirname, '../analyzers');
+
+	var files = mod_fs.readdirSync(dir);
+
+	status('uploading analyzers');
+
+	mod_vasync.forEachParallel({
+	    func: function (name, next) {
+		var stream = mod_fs.createReadStream(mod_path.join(dir, name));
+
+		uploadAnalyzer(client, name, stream, next);
+	    },
+	    inputs: files
+	}, function (err) {
+		checkError(err);
+		cb();
+	});
+};
 
 handlers.init = function ()
 {
@@ -3685,8 +3711,12 @@ handlers.init = function ()
 		var index = indices.shift();
 		var rval;
 
-		if (!index)
-			process.exit(0);
+		if (!index) {
+			uploadAnalyzers(function () {
+				process.exit(0);
+			});
+			return;
+		}
 
 		rval = mod_r.db(db).table(index.table);
 		rval.indexCreate(index.index).run(conn, function (err) {

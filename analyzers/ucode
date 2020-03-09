@@ -1,0 +1,11 @@
+
+if [[ "$THOTH_TYPE" != "crash" ]]; then
+	exit 0
+fi
+
+rev='*panic_thread::print kthread_t t_cpu->cpu_m.mcpu_ucode_info->cui_rev'
+ucode=`echo $rev | mdb $THOTH_DUMP 2> /dev/null | awk '{ print $3 }'`
+
+thoth_set ucode $ucode
+echo $THOTH_NAME: $ucode
+

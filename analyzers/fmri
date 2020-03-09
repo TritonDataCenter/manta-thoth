@@ -1,0 +1,13 @@
+
+if [[ "$THOTH_TYPE" != "core" ]]; then
+	exit 0
+fi
+
+if ( ! pargs -e $THOTH_DUMP | grep -w SMF_FMRI > /dev/null ); then
+	exit 0
+fi
+
+fmri=`pargs -e $THOTH_DUMP | grep -w SMF_FMRI | cut -d= -f2-`
+thoth_set fmri $fmri
+echo $THOTH_NAME: $fmri
+
