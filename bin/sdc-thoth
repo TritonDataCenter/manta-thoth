@@ -1,7 +1,7 @@
-#!/usr/node/bin/node
+#!/opt/custom/thoth/build/node/bin/node
 
 /*
- * Copyright (c) 2016, Joyent Inc. All rights reserved.
+ * Copyright 2020 Joyent, Inc.
  */
 
 mod_amqp = require('/smartdc/node_modules/amqp');
@@ -24,8 +24,7 @@ var exchange;
 var config;
 var connection;
 var writable = true;
-var path = '/usr/node/bin:/opt/custom/thoth/node_modules/manta-thoth/bin:' +
-    '/opt/custom/thoth/node_modules/thoth/bin:' + process.env.PATH;
+var path = '/opt/custom/thoth/build/node/bin:' + process.env.PATH;
 var socket;
 
 process.env.PATH = path;
@@ -819,7 +818,7 @@ var enableHTTP = function ()
 			output.destroySoon();
 		});
 
-		sys.pump(req, output);
+		req.pipe(output);
 	};
 
 	var server = mod_http.createServer(function (req, res) {
