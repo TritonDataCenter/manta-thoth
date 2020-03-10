@@ -18,12 +18,6 @@ thoth_fatal()
 	exit 1
 }
 
-thoth_onexit()
-{
-	[[ $1 -ne 0 ]] || exit 0
-	thoth_fatal "error exit status $1"
-}
-
 #
 # Unlike `thoth load` alone, this updates the index, the Manta file, and the
 # local copy ./info.json.
@@ -50,6 +44,7 @@ thoth_set_sys()
 {
 	local prop=$1
 	local propfile=$THOTH_TMPDIR/thoth.prop.$$
+
 	if [[ "$#" -lt 1 ]]; then
 		thoth_fatal "failed to specify property"
 	fi
@@ -69,7 +64,7 @@ thoth_set()
 {
 	local prop=$1
 	local propfile=$THOTH_TMPDIR/thoth.prop.$$
-	local propout=$THOTH_TMPDIR/thoth.out.$$
+
 	if [[ "$#" -lt 1 ]]; then
 		thoth_fatal "failed to specify property"
 	fi
@@ -98,8 +93,7 @@ thoth_unset_sys()
 
 	cat $THOTH_INFO | json -e "this.$1=undefined" >$tmpfile
 	mv $tmpfile $THOTH_INFO
-	mput -qf $propout $THOTH_INFO_OBJECT
-	$THOTH load $propout
+	thoth_load $propfile
 }
 
 thoth_unset()
@@ -112,8 +106,7 @@ thoth_unset()
 
 	cat $THOTH_INFO | json -e "this.properties.$1=undefined" >$tmpfile
 	mv $tmpfile $THOTH_INFO
-	mput -qf $propout $THOTH_INFO_OBJECT
-	$THOTH load $propout
+	thoth_load $propfile
 }
 
 thoth_ticket()

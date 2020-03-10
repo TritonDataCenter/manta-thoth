@@ -1,3 +1,4 @@
+# Copyright 2020 Joyent, Inc.
 
 if [[ "$THOTH_TYPE" != "core" ]]; then
 	exit 0

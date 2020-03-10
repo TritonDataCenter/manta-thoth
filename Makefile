@@ -32,6 +32,7 @@ release: all
 	@touch $(RELSTAGEDIR)/site/.do-not-delete-me
 	@mkdir -p $(RELSTAGEDIR)/opt/custom/thoth
 	cp -r \
+	    $(ROOT)/analyzers \
 	    $(ROOT)/build \
 	    $(ROOT)/bin \
 	    $(ROOT)/lib \
