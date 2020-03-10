@@ -67,9 +67,7 @@ var thoth = {
 		time: true,
 		stack: true
 	},
-	analyzerdebug: false,
 	jobby: undefined,
-	v8: '/Joyent_Dev/public/mdb_v8/latest',
 	cmds: [
 		{ token: 'init',
 		    usage: 'initialize/validate thoth' },
@@ -919,6 +917,9 @@ jobWait = function (client, jobid, cb)
 	check();
 };
 
+/*
+ * Every job starts with an asset of the latest thoth tarball to use.
+ */
 initThothJob = function (job)
 {
 	var phase = job.phases[0];
@@ -1771,7 +1772,7 @@ handlers.info = function (client, argv)
 	}
 }
 
-loadInfo = function (info, cb)
+var loadInfo = function (info, cb)
 {
 	info.id = mod_path.basename(info.name);
 
@@ -2066,7 +2067,7 @@ handlers.debug = function (client, argv)
  * Note that this uses a new DB connection each time as it's called in a
  * parallel manner.
  */
-indexPath = function (client, path, cb)
+var indexPath = function (client, path, cb)
 {
 	client.get(path, function (err, stream, _) {
 		// skip any dir with a missing info.json
@@ -2871,9 +2872,6 @@ handlers.unticket = function (client, argv)
  */
 var buildInit = function (client, cmd, analyzer, execAnalyzer, cb)
 {
-	if (thoth.analyzerdebug)
-		cmd += 'set -o xtrace\n';
-
 	var asset = thoth.analyzers + '/.thoth.' + process.pid + '.' +
 	    (new Date().valueOf() / 1000);
 
