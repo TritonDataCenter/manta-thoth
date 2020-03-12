@@ -1,4 +1,4 @@
-bits/
-build/
-node_modules/
-thoth-*.tar.gz
+/bits/
+/build/
+/node_modules/
+/thoth-*.tar.gz
