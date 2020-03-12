@@ -114,7 +114,7 @@ if [[ -z $SDC_URL ]]; then
 	export SDC_URL
 fi
 
-if [ ! -d $base ]; then
+if [ ! -d $home ]; then
 	#
 	# If we're installing for the first time, pull down tar ball and
 	# sdc-oneachnode to install everywhere.
