@@ -523,11 +523,12 @@ runs `sdc-thoth` in dry-run mode.  The latest version can be grabbed via:
 Before running the script, you will need to have a running thoth database as
 described above. Then:
 
-    export SDC_ACCOUNT=thoth # or the Manta user that's hosting
-    export SDC_URL=https://mycloudapi... # cloudapi endpoint for Triton
-    export SDC_KEY_ID=... # key ID for that user
+    export TRITON_PROFILE=env
+    export TRITON_URL=https://mycloudapi/
+    export TRITON_ACCOUNT=$THOTH_USER
+    export TRITON_KEY_ID=$TRITON_KEY_ID # key ID for that user
     export MANTA_URL=https://mymanta... # manta endpoint
-    /opt/custom/thoth/bin/sdc-install-thoth
+    /opt/custom/thoth/bin/sdc-thoth-install
 
 After installation, `su - thoth`, and try running `sdc-thoth`. If it's working
 OK, you can edit `./run-thoth` to remove the `--dry-run` flag.

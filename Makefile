@@ -38,15 +38,16 @@ DISTCLEAN_FILES += ./node_modules
 .PHONY: release
 release: all
 	@echo "Building $(RELEASE_TARBALL)"
-	@mkdir -p $(RELSTAGEDIR)/opt/custom/thoth
+	mkdir -p $(RELSTAGEDIR)/opt/custom/thoth
 	cp -r \
 		$(ROOT)/analyzers \
-		$(ROOT)/build/node \
 		$(ROOT)/bin \
 		$(ROOT)/lib \
 		$(ROOT)/node_modules \
 		$(ROOT)/package.json \
-	$(RELSTAGEDIR)/opt/custom/thoth
+		$(RELSTAGEDIR)/opt/custom/thoth
+	mkdir -p $(RELSTAGEDIR)/opt/custom/thoth/build/
+	cp -r $(ROOT)/build/node $(RELSTAGEDIR)/opt/custom/thoth/build/
 	(cd $(RELSTAGEDIR) && $(TAR) -I pigz -cf $(ROOT)/$(RELEASE_TARBALL) .)
 	@rm -rf $(RELSTAGEDIR)
 
