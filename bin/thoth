@@ -3874,6 +3874,14 @@ var main = function ()
 	if (argv.length < 3)
 		usage('expected command');
 
+	/*
+	 * node-manta "helpfully" elides stack traces if !DEBUG. Let's un-elide
+	 * them.
+	 */
+	if (process.env.DEBUG === undefined) {
+		process.env.DEBUG = '1';
+	}
+
 	thoth.analyzers = thoth.path + '/' + thoth.analyzers;
 	thoth.logs = thoth.path + '/' + thoth.logs;
 	thoth.index = thoth.path + '/' + thoth.index;
