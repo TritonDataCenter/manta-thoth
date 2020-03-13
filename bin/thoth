@@ -3889,6 +3889,12 @@ var main = function ()
 		process.env.DEBUG = '1';
 	}
 
+	/* see https://github.com/joyent/node-exeunt */
+	[process.stdout, process.stderr].forEach(function (s) {
+		s && s._handle && s._handle.setBlocking &&
+		    s._handle.setBlocking(true)
+	});
+
 	thoth.analyzers = thoth.path + '/' + thoth.analyzers;
 	thoth.logs = thoth.path + '/' + thoth.logs;
 	thoth.index = thoth.path + '/' + thoth.index;
