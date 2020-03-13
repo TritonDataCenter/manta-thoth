@@ -103,7 +103,7 @@ if [[ -z $TRITON_URL ]]; then
 
 	if ( ! ping $server 1>&2 ); then
 		if ( ! grep $server $hosts > /dev/null ); then
-			ip=`dig +short $server | head -1`
+			ip=$(dig +short $server | head -1)
 			cp $hosts $backup
 			echo "$ip $server" >> $hosts
 		fi
@@ -152,13 +152,13 @@ ssh-keygen -t rsa -f $keyfile -N "" 1>&2
 #
 # Set the Manta variables
 #
-keyname="thoth-`sysinfo | json 'Datacenter Name'`-`sysinfo | json UUID`"
+keyname="thoth-$(sysinfo | json 'Datacenter Name')-$(sysinfo | json UUID)"
 
 echo "Adding local thoth user key to $TRITON_ACCOUNT..."
 triton key delete -f "$keyname" 2>/dev/null || true
 triton key add -n "$keyname" $pub 1>&2
 
-fingerprint=`ssh-keygen -l -f $pub | awk '{print $2}' | tr -d '\n'`
+fingerprint=$(ssh-keygen -l -f $pub | awk '{print $2}' | tr -d '\n')
 
 echo "Creating .bashrc ..."
 bashrc=$home/.bashrc
@@ -183,7 +183,7 @@ cat > $crontab <<EOF
 44 * * * * bash -c $runthoth
 EOF
 
-echo Creating `basename $runthoth` script ...
+echo Creating $(basename $runthoth) script ...
 
 cat > "$runthoth" <<"EOF"
 #!/bin/bash
@@ -248,7 +248,7 @@ echo Creating SMF manifest ...
 #
 # Now create the manifest
 #
-mkdir -p `dirname $manifest` || true
+mkdir -p $(dirname $manifest) || true
 cat > $manifest <<EOF
 <?xml version="1.0"?>
 <!DOCTYPE service_bundle SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">

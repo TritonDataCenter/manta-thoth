@@ -27,17 +27,17 @@ if [[ $? != 0 ]]; then
 fi
 
 cat <<EOF > exception.js
-console.log(JSON.stringify(`mdb -e "::load v8; ${err_ptr}::jsprint" \
-    $THOTH_DUMP 2> /dev/null | tail +5 | tr -d '\n'`))
+console.log(JSON.stringify($(mdb -e "::load v8; ${err_ptr}::jsprint" \
+    $THOTH_DUMP 2> /dev/null | tail +5 | tr -d '\n')))
 EOF
 if ! node exception.js 2>/tmp/err >exception.json; then
-	echo "$THOTH_NAME: no exception object found: `cat /tmp/err`"
+	echo "$THOTH_NAME: no exception object found: $(cat /tmp/err)"
 	exit 0
 fi
 if ! grep { exception.json > /dev/null ; then
-	echo $THOTH_NAME: no exception object found: `cat /tmp/err`
+	echo "$THOTH_NAME: no exception object found: $(cat /tmp/err)"
 	exit 0
 fi
 
-echo $THOTH_NAME: `cat exception.json`
+echo $THOTH_NAME: $(cat exception.json)
 cat exception.json | thoth_set jsexception 2> /dev/null
