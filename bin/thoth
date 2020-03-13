@@ -1782,8 +1782,15 @@ var loadInfo = function (info, cb)
 			return;
 		}
 
-		mod_r.table('dumps').insert(info,
-		    { conflict: 'replace' }).run(conn, cb);
+		/*
+		 * Lovely combo of callbacks and throws...
+		 */
+		try {
+			mod_r.table('dumps').insert(info,
+			    { conflict: 'replace' }).run(conn, cb);
+		} catch (e) {
+			cb(e);
+		}
 	});
 }
 
@@ -1801,7 +1808,7 @@ handlers.load = function (client, argv)
 		client.put(info.name + thoth.unindexed, stream, function () {
 			// ignore a failure to mput here
 			fatal('couldn\'t insert ' + info.id +
-			    ': ' + err.message);
+			    ': ' + err.message + '\n' + err.stack);
 		});
 	};
 
