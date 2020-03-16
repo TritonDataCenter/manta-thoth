@@ -3889,7 +3889,9 @@ var main = function ()
 		process.env.DEBUG = '1';
 	}
 
-	/* see https://github.com/joyent/node-exeunt */
+	/*
+	 * This is https://github.com/joyent/node-exeunt solution #3.
+	 */
 	[process.stdout, process.stderr].forEach(function (s) {
 		s && s._handle && s._handle.setBlocking &&
 		    s._handle.setBlocking(true)
