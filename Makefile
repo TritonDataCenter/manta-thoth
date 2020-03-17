@@ -4,6 +4,7 @@ UNAME=$(shell uname -s | tr "[:upper:]" "[:lower:]")
 VER=$(shell json -f package.json version)
 NAME := thoth
 RELEASE_TARBALL := $(NAME)-$(UNAME)-$(VER).tar.gz
+LATEST_TARBALL := $(NAME)-$(UNAME)-latest.tar.gz
 ROOT := $(shell pwd)
 
 NODE_PREBUILT_VERSION=v8.17.0
@@ -54,7 +55,7 @@ release: all
 .PHONY: publish
 publish: release
 	mput -f $(ROOT)/$(RELEASE_TARBALL) /thoth/public/$(RELEASE_TARBALL)
-	# FIXME: also put as -latest
+	mput -f $(ROOT)/$(RELEASE_TARBALL) /thoth/public/$(LATEST_TARBALL)
 
 include ./deps/eng/tools/mk/Makefile.deps
 

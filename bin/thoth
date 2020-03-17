@@ -48,8 +48,7 @@ var thoth = {
 	logs: 'logs',
 	log: 'log',
 	verbose: true,
-	// FIXME
-	asset: '/thoth/public/thoth-sunos-1.3.0.tar.gz',
+	asset: '/thoth/public/thoth-sunos-latest.tar.gz',
 	db: {
 		host: 'localhost',
 		port: 28015,
