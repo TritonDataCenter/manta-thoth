@@ -24,6 +24,7 @@ var Readable = require('stream').Readable;
 var sprintf = require('sprintf').sprintf;
 var endsWith = mod_jsprim.endsWith;
 var Int64 = require('node-int64');
+var mkdirp = require('mkdirp');
 
 var ThothListStream = require('../lib/liststream').ThothListStream;
 var forEachStream = require('../lib/foreachstream');
@@ -1935,9 +1936,15 @@ var downloadDump = function(client, info, cb)
 	status('downloading ' + mod_path.basename(info.dump) +
 	    ' to local cache');
 
-	mod_fs.mkdirSync(mod_path.dirname(dump_path), { recursive: true });
+	mkdirp(mod_path.dirname(dump_path), function (err) {
+		if (err) {
+			cb(err);
+			return;
+		}
 
-	mget(client, dump_path, info.dump, cb);
+		mget(client, dump_path, info.dump, cb);
+	});
+
 }
 
 /*
