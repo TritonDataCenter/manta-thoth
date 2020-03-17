@@ -112,6 +112,16 @@ var thoth = {
 	]
 };
 
+/*
+ * A user can set THOTH_NO_JOBS=1 to disable the use of jobs by thoth.
+ * Generally this is only useful for development of thoth itself, because thoth
+ * will determine itself if the target Manta supports jobs.
+ */
+if (process.env.THOTH_NO_JOBS) {
+	thoth.jobby = false;
+}
+
+
 var status = function (msg)
 {
 	if (thoth.verbose)
@@ -241,6 +251,11 @@ var jobby = function (httpres)
 
 var checkJobby = function (client, cb)
 {
+	if (thoth.jobby !== undefined) {
+		cb(thoth.jobby);
+		return;
+	}
+
 	client.info('/thoth/stor/thoth', function (err, info) {
 		thoth.jobby = (info.headers['server'] === 'Manta');
 		cb(thoth.jobby);
