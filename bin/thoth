@@ -32,6 +32,8 @@ var mapStream = require('../lib/mapstream');
 var jsondiff = require('../lib/jsondiff');
 var vasync_extra = require('../lib/vasync-extra');
 
+var thothVersion = require('../package').version;
+
 var handlers = {};
 var autoanalyzers = {};
 
@@ -48,7 +50,7 @@ var thoth = {
 	logs: 'logs',
 	log: 'log',
 	verbose: true,
-	asset: '/thoth/public/thoth-sunos-latest.tar.gz',
+	asset: '/thoth/public/thoth-sunos-' + thothVersion + 'latest.tar.gz',
 	db: {
 		host: 'localhost',
 		port: 28015,
