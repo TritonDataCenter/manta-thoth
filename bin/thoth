@@ -50,7 +50,7 @@ var thoth = {
 	logs: 'logs',
 	log: 'log',
 	verbose: true,
-	asset: '/thoth/public/thoth-sunos-' + thothVersion + 'latest.tar.gz',
+	asset: '/thoth/public/thoth-sunos-' + thothVersion + '.tar.gz',
 	db: {
 		host: 'localhost',
 		port: 28015,
