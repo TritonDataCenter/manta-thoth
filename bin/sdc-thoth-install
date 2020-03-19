@@ -99,7 +99,7 @@ fi
 [[ -n $TRITON_KEY_ID ]] || fatal "must set \$TRITON_KEY_ID. This must already exist in the $TRITON_ACCOUNT account, and needs to be available on this node (ssh-agent is recommended)."
 
 if [[ -z $TRITON_URL ]]; then
-	server=us-west-1.api.joyentcloud.com
+	server=us-west-1.api.joyent.com
 
 	if ( ! ping $server 1>&2 ); then
 		if ( ! grep $server $hosts > /dev/null ); then
