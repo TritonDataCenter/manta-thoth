@@ -1,4 +1,7 @@
 #!/bin/bash
+#
+# Copyright 2020 Joyent, Inc.
+#
 
 log=/var/tmp/sdc-thoth-install.log
 exec 2>"$log" 4>&1
@@ -92,15 +95,15 @@ if [[ -z $DOWNLOAD_MANTA ]]; then
 
 fi
 
-[[ -n $SDC_ACCOUNT ]] || fatal "must set \$SDC_ACCOUNT. This is the account in manta that stores your thoth data."
-[[ -n $SDC_KEY_ID ]] || fatal "must set \$SDC_KEY_ID. This must already exist in the $SDC_ACCOUNT account, and needs to be available on this node (ssh-agent is recommended)."
+[[ -n $TRITON_ACCOUNT ]] || fatal "must set \$TRITON_ACCOUNT. This is the account in manta that stores your thoth data."
+[[ -n $TRITON_KEY_ID ]] || fatal "must set \$TRITON_KEY_ID. This must already exist in the $TRITON_ACCOUNT account, and needs to be available on this node (ssh-agent is recommended)."
 
-if [[ -z $SDC_URL ]]; then
-	server=us-west-1.api.joyentcloud.com
+if [[ -z $TRITON_URL ]]; then
+	server=us-west-1.api.joyent.com
 
 	if ( ! ping $server 1>&2 ); then
 		if ( ! grep $server $hosts > /dev/null ); then
-			ip=`dig +short $server | head -1`
+			ip=$(dig +short $server | head -1)
 			cp $hosts $backup
 			echo "$ip $server" >> $hosts
 		fi
@@ -110,11 +113,11 @@ if [[ -z $SDC_URL ]]; then
 		fi
 	fi
 
-	SDC_URL=https://$server
-	export SDC_URL
+	TRITON_URL=https://$server
+	export TRITON_URL
 fi
 
-if [ ! -d $base ]; then
+if [ ! -d $home ]; then
 	#
 	# If we're installing for the first time, pull down tar ball and
 	# sdc-oneachnode to install everywhere.
@@ -130,10 +133,9 @@ if [ ! -d $base ]; then
 	rm $staged
 fi
 
-PATH=$base/bin:$PATH
-PATH=$base/node_modules/manta-thoth/bin:$PATH
-PATH=$base/node_modules/manta-thoth/node_modules/manta/bin:$PATH
-PATH=$base/node_modules/smartdc/bin:$PATH
+PATH=$base/bin:$base/build/node/bin/:/usr/bin:/usr/sbin
+PATH=$base/node_modules/manta/bin:$PATH
+PATH=$base/node_modules/triton/bin:$PATH
 export PATH
 
 mkdir -p $home
@@ -150,34 +152,30 @@ ssh-keygen -t rsa -f $keyfile -N "" 1>&2
 #
 # Set the Manta variables
 #
-key="`sysinfo | json 'Datacenter Name'`-`sysinfo | json UUID`"
+keyname="thoth-$(sysinfo | json 'Datacenter Name')-$(sysinfo | json UUID)"
 
-if ( sdc-deletekey -n "$key" 1>&2 ); then
-	echo "Cleaning up existing key ..."
-fi
+echo "Adding local thoth user key to $TRITON_ACCOUNT..."
+triton key delete -f "$keyname" 2>/dev/null || true
+triton key add -n "$keyname" $pub 1>&2
 
-echo "Adding key to $SDC_ACCOUNT ..."
-sdc-createkey -n "$key" $pub 1>&2
-
-fingerprint=`ssh-keygen -l -f $pub | awk '{print $2}' | tr -d '\n'`
+fingerprint=$(ssh-keygen -l -f $pub | awk '{print $2}' | tr -d '\n')
 
 echo "Creating .bashrc ..."
 bashrc=$home/.bashrc
 cat > $bashrc <<EOF
 export MANTA_URL=$MANTA_URL
 export MANTA_KEY_ID=$fingerprint
-export MANTA_USER=$SDC_ACCOUNT
+export MANTA_USER=$TRITON_ACCOUNT
 $insecure
 export PATH=$PATH
-export THOTH_UUID=$key
+export THOTH_UUID=$keyname
 EOF
-ln $bashrc $home/.bash_profile
+ln -s $bashrc $home/.bash_profile
 
 crontab=$home/crontab
 postboot=$base/bin/postboot
 manifest=/opt/custom/smf/thoth.xml
 runthoth=$home/run-thoth
-thothwrapper=$base/bin/thoth
 
 echo Creating crontab ...
 
@@ -185,7 +183,7 @@ cat > $crontab <<EOF
 44 * * * * bash -c $runthoth
 EOF
 
-echo Creating `basename $runthoth` script ...
+echo Creating $(basename $runthoth) script ...
 
 cat > "$runthoth" <<"EOF"
 #!/bin/bash
@@ -220,14 +218,6 @@ EOF
 chmod +x $runthoth
 ln -s ../home/thoth/run-thoth /opt/custom/thoth/bin/run-thoth
 
-cat > $thothwrapper <<EOF
-#!/bin/bash
-
-$base/bin/node $base/node_modules/.bin/thoth "\${@}"
-EOF
-
-chmod +x $thothwrapper
-
 cat > $postboot <<EOF
 #!/bin/bash
 
@@ -258,7 +248,7 @@ echo Creating SMF manifest ...
 #
 # Now create the manifest
 #
-mkdir -p `dirname $manifest` || true
+mkdir -p $(dirname $manifest) || true
 cat > $manifest <<EOF
 <?xml version="1.0"?>
 <!DOCTYPE service_bundle SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">

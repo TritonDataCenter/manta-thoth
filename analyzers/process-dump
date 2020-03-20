@@ -1,0 +1,49 @@
+#!/bin/bash
+
+#
+# Uncompresses a crash dump, uploads it back to thoth,
+# and collects some basic info.
+#
+
+set -e
+set -o pipefail
+
+if [[ "$THOTH_TYPE" != "crash" ]]; then
+	echo "only runs on crash dumps" >&2
+	exit 1
+fi
+
+if [[ $(json properties.uncompressed <$THOTH_INFO) = "true" ]]; then
+	echo "dump file is already uncompressed"
+	VMCORE=$THOTH_DUMP
+else
+	savecore -vf $THOTH_DUMP -d $(pwd)
+	VMCORE=vmcore.${THOTH_DUMP##*.}
+
+	#
+	# This is a little bit cheeky, but it's better than keeping a useless
+	# dump file, and downloading the vmcore again.
+	#
+	if [[ "$THOTH_SUPPORTS_JOBS" = "false" ]]; then
+		cp $VMCORE /var/tmp/thoth/cache/$THOTH_NAME/
+		rm -f $THOTH_DUMP
+	fi
+	mput -f $VMCORE $THOTH_DIR/$VMCORE
+	thoth_set_sys dump $THOTH_DIR/$VMCORE
+	thoth_set uncompressed "true"
+fi
+
+mdb -e ::status $VMCORE | thoth_set status
+
+#
+# We want stack to be an array of strings, so we open-code this.
+#
+mdb -e '$c 0' $VMCORE | \
+    awk 'BEGIN { printf("{ \"stack\": [ ") } \
+    { printf("%s\"%s\"", NR > 1 ? ", " : "", $0) } \
+    END { printf(" ] }\n") }' >stack.out
+
+cat $THOTH_INFO stack.out | json --deep-merge >$THOTH_INFO.tmp
+mv $THOTH_INFO.tmp $THOTH_INFO
+mput -qf $THOTH_INFO $THOTH_INFO_OBJECT
+thoth_load
