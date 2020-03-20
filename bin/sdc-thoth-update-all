@@ -75,6 +75,21 @@ echo "Downloading thoth to compute nodes ..."
 sdc-oneachnode -a -g $staged -d /var/tmp 1>&2
 echo "Installing thoth on compute nodes ..."
 sdc-oneachnode -a "cd / ; gzcat $tarball | tar xf - ; rm $tarball" 1>&2
-rm $staged
-echo "Done"
+# remove the old node so we don't pick it up
+sdc-oneachnode -a "rm -f /opt/custom/thoth/bin/node"
 
+rm $staged
+
+echo "Fixing up"
+
+path=$base/bin:$base/build/node/bin/:/usr/bin:/usr/sbin
+path=$base/node_modules/manta/bin:$path
+path=$base/node_modules/triton/bin:$path
+
+# need to be careful as older installations had a hardlink between the two bash
+# dotfiles, which sed -i would break
+/usr/bin/sed "s+^export PATH=.*+export PATH=$path+" $home/.bash_profile >bash_profile.tmp.$$
+cat bash_profile.tmp.$$ >$home/.bash_profile
+rm -f bash_profile.tmp.$$
+
+echo "Done"

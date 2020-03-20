@@ -133,7 +133,7 @@ if [ ! -d $home ]; then
 	rm $staged
 fi
 
-PATH=$base/bin:$base/build/node/bin/:$PATH
+PATH=$base/bin:$base/build/node/bin/:/usr/bin:/usr/sbin
 PATH=$base/node_modules/manta/bin:$PATH
 PATH=$base/node_modules/triton/bin:$PATH
 export PATH
@@ -170,7 +170,7 @@ $insecure
 export PATH=$PATH
 export THOTH_UUID=$keyname
 EOF
-ln $bashrc $home/.bash_profile
+ln -s $bashrc $home/.bash_profile
 
 crontab=$home/crontab
 postboot=$base/bin/postboot
