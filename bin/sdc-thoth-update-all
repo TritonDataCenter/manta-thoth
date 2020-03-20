@@ -1,4 +1,7 @@
 #!/bin/bash
+#
+# Copyright 2020 Joyent, Inc.
+#
 
 log=/var/tmp/sdc-thoth-update.log
 exec 2>"$log" 4>&1
@@ -54,7 +57,7 @@ if [[ -z $MANTA_URL ]]; then
 	server=us-east.manta.joyent.com
 
 	if ( ! ping $server 1>&2 ); then
-		MANTA_URL=https://`dig +short $server | head -1`
+		MANTA_URL=https://$(dig +short $server | head -1)
 	else
 		MANTA_URL=https://$server
 	fi
@@ -72,8 +75,21 @@ echo "Downloading thoth to compute nodes ..."
 sdc-oneachnode -a -g $staged -d /var/tmp 1>&2
 echo "Installing thoth on compute nodes ..."
 sdc-oneachnode -a "cd / ; gzcat $tarball | tar xf - ; rm $tarball" 1>&2
-sdc-oneachnode -c -X -g /opt/custom/thoth/bin/thoth -d /opt/custom/thoth/bin/
-sdc-oneachnode -a 'chmod +x /opt/custom/thoth/bin/thoth'
-rm $staged
-echo "Done"
+# remove the old node so we don't pick it up
+sdc-oneachnode -a "rm -f /opt/custom/thoth/bin/node"
 
+rm $staged
+
+echo "Fixing up"
+
+path=$base/bin:$base/build/node/bin/:/usr/bin:/usr/sbin
+path=$base/node_modules/manta/bin:$path
+path=$base/node_modules/triton/bin:$path
+
+# need to be careful as older installations had a hardlink between the two bash
+# dotfiles, which sed -i would break
+/usr/bin/sed "s+^export PATH=.*+export PATH=$path+" $home/.bash_profile >bash_profile.tmp.$$
+cat bash_profile.tmp.$$ >$home/.bash_profile
+rm -f bash_profile.tmp.$$
+
+echo "Done"

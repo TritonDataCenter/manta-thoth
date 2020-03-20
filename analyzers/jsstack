@@ -1,0 +1,27 @@
+# Copyright 2020 Joyent, Inc.
+
+if ! cat $THOTH_INFO | json psargs | grep node > /dev/null ; then
+	echo $THOTH_NAME: not node
+	exit 0
+fi
+
+# like this to skip the v8 load noise
+if ! mdb -e "::jsstack ! cat >stack.txt" $THOTH_DUMP >/dev/null; then
+	echo "$THOTH_NAME: failed to save stack"
+	exit 0
+fi
+
+#
+# We want stack to be an array of strings, so we open-code this.
+#
+cat stack.txt | \
+    awk 'BEGIN { printf("{ \"properties\": { \"jsstack\": [ ") } \
+    { printf("%s\"%s\"", NR > 1 ? ", " : "", $0) } \
+    END { printf(" ] } }\n") }' >stack.out
+
+cat $THOTH_INFO stack.out | json --deep-merge >$THOTH_INFO.tmp
+mv $THOTH_INFO.tmp $THOTH_INFO
+mput -qf $THOTH_INFO $THOTH_INFO_OBJECT
+thoth_load
+
+echo "$THOTH_NAME: $(json properties.jsstack <$THOTH_INFO)"

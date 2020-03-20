@@ -1,7 +1,7 @@
-#!/usr/node/bin/node
+#!/opt/custom/thoth/build/node/bin/node
 
 /*
- * Copyright (c) 2016, Joyent Inc. All rights reserved.
+ * Copyright 2020 Joyent, Inc.
  */
 
 mod_amqp = require('/smartdc/node_modules/amqp');
@@ -24,8 +24,7 @@ var exchange;
 var config;
 var connection;
 var writable = true;
-var path = '/usr/node/bin:/opt/custom/thoth/node_modules/manta-thoth/bin:' +
-    '/opt/custom/thoth/node_modules/thoth/bin:' + process.env.PATH;
+var path = '/opt/custom/thoth/build/node/bin:' + process.env.PATH;
 var socket;
 
 process.env.PATH = path;
@@ -366,7 +365,7 @@ var summarize = function ()
 			    mod_path.basename(done[i].dump) + ': ' +
 			    (done[i].failed ?
 			    ('failed (' + done[i].where + ')') :
-			    (done[i].time ? 
+			    (done[i].time ?
 			    ('succeeded in ' + hms(done[i].time)) :
 			    (done[i].size ?
 			    ('would have uploaded ' + humanSize(done[i].size)) :
@@ -434,7 +433,7 @@ var upload = function (which, filename)
 		cmd += 'mkdir ' + dir + '; cd ' + dir + ' ;';
 		cmd += 'gunzip -c ' + filename + ' | tar xvf - ;'
 		cmd += 'thoth upload * ; status=$? ; ';
-		cmd += 'cd / ; rm ' + filename + '; rm -rf ' + dir + '; '; 
+		cmd += 'cd / ; rm ' + filename + '; rm -rf ' + dir + '; ';
 	}
 
 	for (i = 0; i < props.length; i++) {
@@ -629,7 +628,7 @@ var discover = function (which)
 
 	where.all = all;
 	var ls = 'ls -1 ';
-	
+
 	for (i = 0; i < type.length; i++) {
 		if (!where[type[i]]) {
 			ls += '/zones/*/cores/core.' + type[i] + '.* ';
@@ -638,9 +637,9 @@ var discover = function (which)
 		}
 	}
 
-	var cmd = 'for d in `' + ls + ' 2> /dev/null`; do ' +
-	    'size=`ls -l $d | awk \'{ print $5 }\'` ; ' +
-	    'hash=`thoth object $d`; ' +
+	var cmd = 'for d in $(' + ls + ' 2> /dev/null); do ' +
+	    'size=$(ls -l $d | awk \'{ print $5 }\') ; ' +
+	    'hash=$(thoth object $d); ' +
 	    'if [[ "$?" -eq 0 ]]; then echo $d $hash $size ; fi ; done';
 
 	if (options.node.present) {
@@ -669,7 +668,7 @@ var discover = function (which)
 			/*
 			 * Pop off the empty string from the trailing newline.
 			 */
-			status[which].dumps.pop();	
+			status[which].dumps.pop();
 		}
 
 		initiate(which);
@@ -778,7 +777,7 @@ var onReady = function ()
 
 /*
  * To enable file transfer between the head-node and one or more compute nodes,
- * we hang out the shingle for HTTP PUTs.  
+ * we hang out the shingle for HTTP PUTs.
  * We will only accept a PUT if it is to the
  * request ID we select for execution, and will only store the files in the
  * specified directory, with each file named with the UUID of the compute node
@@ -819,7 +818,7 @@ var enableHTTP = function ()
 			output.destroySoon();
 		});
 
-		sys.pump(req, output);
+		req.pipe(output);
 	};
 
 	var server = mod_http.createServer(function (req, res) {

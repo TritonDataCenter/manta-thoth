@@ -1,0 +1,43 @@
+# Copyright 2020 Joyent, Inc.
+
+if ! cat $THOTH_INFO | json psargs | grep node > /dev/null ; then
+	echo $THOTH_NAME: not node
+	exit 0
+fi
+
+# like this to skip the v8 load noise
+if ! mdb -e "::stack ! cat > stack.txt" $THOTH_DUMP >/dev/null; then
+	echo "$THOTH_NAME: failed to save stack"
+	exit 0
+fi
+
+#
+# Examine the stack to find the Error we died on
+#
+cat > extract_args.awk <<'EOF'
+($1 ~ /::DoThrow[+]0x[0-9a-f]*$/) || ($1 ~ /Isolate::Throw[+]0x[0-9a-f]*$/) {
+	printf("%s\n", $3);
+	exit(0);
+}
+EOF
+read err_ptr < <(awk -F '[(), ]+' -f extract_args.awk stack.txt)
+if [[ $? != 0 ]]; then
+	echo "$THOTH_NAME: no fatal exception found"
+	exit 0
+fi
+
+cat <<EOF > exception.js
+console.log(JSON.stringify($(mdb -e "::load v8; ${err_ptr}::jsprint" \
+    $THOTH_DUMP 2> /dev/null | tail +5 | tr -d '\n')))
+EOF
+if ! node exception.js 2>/tmp/err >exception.json; then
+	echo "$THOTH_NAME: no exception object found: $(cat /tmp/err)"
+	exit 0
+fi
+if ! grep { exception.json > /dev/null ; then
+	echo "$THOTH_NAME: no exception object found: $(cat /tmp/err)"
+	exit 0
+fi
+
+echo $THOTH_NAME: $(cat exception.json)
+cat exception.json | thoth_set jsexception 2> /dev/null
