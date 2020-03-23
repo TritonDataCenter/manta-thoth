@@ -136,6 +136,14 @@ uploaded in the last 6 hours:
     71aff9c315553b03 core  2017-11-17T23:31:14 node             -
     72f18495c7f54841 core  2017-11-18T00:21:17 node             -
 
+#### Special token: `otime`
+
+The special token `otime` can be used to match only dumps uploaded prior to that
+time. It can be combined with `mtime` to specify a range, for example, all
+dumps uploaded in the *previous* week could be listed with:
+
+    thoth ls mtime=2w otime=1w
+
 #### Special token: `limit`
 
 The special token `limit` denotes that the number of dumps specified
