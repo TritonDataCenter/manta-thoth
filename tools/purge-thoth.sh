@@ -106,7 +106,7 @@ END {
 		if [[ "$dryrun" = "false" ]]; then
 			json -e 'properties.purged = "true"' <$tmpfile2 | \
 			    thoth load /dev/stdin
-			true ; #mrm -r $path
+			mrm -r $path
 		fi
 	elif thoth info $name >$tmpfile2; then
 		# already deleted; mark as purged
