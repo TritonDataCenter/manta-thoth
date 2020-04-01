@@ -21,6 +21,10 @@
 	"bin": {
 		"thoth": "bin/thoth"
 	},
+	"files": [
+		"analyzers",
+		"lib"
+	],
 	"repository": {
 		"type": "git",
 		"url": "http://github.com/joyent/manta-thoth.git"
