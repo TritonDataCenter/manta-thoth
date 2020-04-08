@@ -129,7 +129,7 @@ if [ ! -d $home ]; then
 	echo "Downloading thoth to compute nodes ..."
 	sdc-oneachnode -a -g $staged -d /var/tmp 1>&2
 	echo "Installing thoth on compute nodes ..."
-	sdc-oneachnode -a "cd / ; gzcat $tarball | tar xf - ; rm $tarball" 1>&2
+	sdc-oneachnode -a "cd / ; gzcat $tarball | tar oxf - ; rm $tarball" 1>&2
 	rm $staged
 fi
 

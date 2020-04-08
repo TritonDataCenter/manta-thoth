@@ -74,7 +74,7 @@ curl -# -k $MANTA_URL/thoth/public/thoth-sunos-latest.tar.gz > $staged 2>&4
 echo "Downloading thoth to compute nodes ..."
 sdc-oneachnode -a -g $staged -d /var/tmp 1>&2
 echo "Installing thoth on compute nodes ..."
-sdc-oneachnode -a "cd / ; gzcat $tarball | tar xf - ; rm $tarball" 1>&2
+sdc-oneachnode -a "cd / ; gzcat $tarball | tar oxf - ; rm $tarball" 1>&2
 # remove the old node so we don't pick it up
 sdc-oneachnode -a "rm -f /opt/custom/thoth/bin/node"
 
